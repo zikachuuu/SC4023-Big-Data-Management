@@ -1,4 +1,5 @@
 # code likely dont work!
+# update: it doesnt work.. shitty af. need clean
 
 ## My prompt:
 

@@ -7,7 +7,7 @@ import gc
 # CONFIGURATION & CONSTANTS
 # ---------------------------------------------------------
 
-INPUT_FILE = 'ResalePricesSingapore.csv'
+INPUT_FILE = os.path.join(os.path.dirname(__file__), 'ResalePricesSingapore.csv')
 CHUNK_SIZE = 1000  # Size for Zone Map chunks
 
 # Mapping from Matric Digit to Town (Source: Table 1)
@@ -70,7 +70,7 @@ class ColumnStoreDB:
         # Crucial: Dictionaries must be sorted to allow range queries if needed later.
         
         # Columns to encode (Strings)
-        enc_cols = ['Month', 'Town', 'Flat_Type', 'Block', 'Street_Name', 'Flat_Model', 'Storey_Range']
+        enc_cols = ['month', 'town', 'flat_type', 'block', 'street_name', 'flat_model', 'storey_range']
         
         for col in enc_cols:
             unique_vals = np.unique(self.columns[col])
@@ -82,10 +82,10 @@ class ColumnStoreDB:
             self.columns[col] = np.searchsorted(unique_vals, self.columns[col]).astype(np.int32)
             
         # Convert numeric columns explicitly
-        self.columns['Floor_Area'] = self.columns['Floor_Area'].astype(np.float32)
-        self.columns['Resale_Price'] = self.columns['Resale_Price'].astype(np.float32)
+        self.columns['floor_area'] = self.columns['floor_area'].astype(np.float32)
+        self.columns['resale_price'] = self.columns['resale_price'].astype(np.float32)
         # Lease_Commence_Date is purely int in the file usually
-        self.columns['Lease_Commence_Date'] = self.columns['Lease_Commence_Date'].astype(np.int32)
+        self.columns['lease_commence_date'] = self.columns['lease_commence_date'].astype(np.int32)
 
         # --- 2. Sorting ---
         # Sort order: Month -> Town -> Floor Area -> Resale Price
@@ -93,10 +93,10 @@ class ColumnStoreDB:
         
         # lexsort sorts by keys in reverse order (last key is primary)
         sort_indices = np.lexsort((
-            self.columns['Resale_Price'],
-            self.columns['Floor_Area'],
-            self.columns['Town'],
-            self.columns['Month']
+            self.columns['resale_price'],
+            self.columns['floor_area'],
+            self.columns['town'],
+            self.columns['month']
         ))
         
         # Reorder ALL columns based on sort_indices
@@ -108,8 +108,8 @@ class ColumnStoreDB:
         print("Building Zone Maps...")
         num_chunks = (self.row_count + CHUNK_SIZE - 1) // CHUNK_SIZE
         
-        # We only strictly need zone maps for filter columns: Month, Town, Floor_Area
-        zone_cols = ['Month', 'Town', 'Floor_Area']
+        # We only strictly need zone maps for filter columns: month, town, floor_area
+        zone_cols = ['month', 'town', 'floor_area']
         
         for col in zone_cols:
             self.zone_maps[col] = []
@@ -130,11 +130,11 @@ class ColumnStoreDB:
         return encoded_val
 
     def get_month_int(self, year_str, month_str):
-        """Converts 'YYYY', 'MM' inputs into the encoded integer for the 'Month' column"""
+        """Converts 'YYYY', 'MM' inputs into the encoded integer for the 'month' column"""
         s = f"{year_str}-{str(month_str).zfill(2)}"
         # Find index in dictionary
-        idx = np.searchsorted(self.dictionaries['Month'], s)
-        if idx < len(self.dictionaries['Month']) and self.dictionaries['Month'][idx] == s:
+        idx = np.searchsorted(self.dictionaries['month'], s)
+        if idx < len(self.dictionaries['month']) and self.dictionaries['month'][idx] == s:
             return idx
         return -1 # Not found
 
@@ -191,8 +191,8 @@ def run_queries(db, matric_num):
     for t_name in town_names:
         # Find index in the Town dictionary
         # Dictionary is sorted, can use searchsorted or manual check
-        idx = np.searchsorted(db.dictionaries['Town'], t_name)
-        if idx < len(db.dictionaries['Town']) and db.dictionaries['Town'][idx] == t_name:
+        idx = np.searchsorted(db.dictionaries['town'], t_name)
+        if idx < len(db.dictionaries['town']) and db.dictionaries['town'][idx] == t_name:
             town_encoded_ids.append(idx)
     town_encoded_ids.sort() # Keep sorted for efficiency
 
@@ -220,26 +220,26 @@ def run_queries(db, matric_num):
             # Note: Because 'Month' dictionary is sorted strings "2015-01", "2015-02"... 
             # we can just find the start string index and end string index.
             
-            start_code = np.searchsorted(db.dictionaries['Month'], s_str)
-            end_code = np.searchsorted(db.dictionaries['Month'], e_str, side='right') - 1
+            start_code = np.searchsorted(db.dictionaries['month'], s_str)
+            end_code = np.searchsorted(db.dictionaries['month'], e_str, side='right') - 1
             
             # Handle case where generated date exceeds dataset (e.g. 2026)
-            if start_code >= len(db.dictionaries['Month']):
+            if start_code >= len(db.dictionaries['month']):
                 continue # Range is completely outside
 
             # --- SCANNING (The Filter Pipeline) ---
             
             # 1. Identify Candidate Chunks (Zone Map Optimization)
             valid_chunk_indices = []
-            num_chunks = len(db.zone_maps['Month'])
+            num_chunks = len(db.zone_maps['month'])
             
             for i in range(num_chunks):
                 # Check Month overlap
-                m_min = db.zone_maps['Month'][i]['min']
-                m_max = db.zone_maps['Month'][i]['max']
+                m_min = db.zone_maps['month'][i]['min']
+                m_max = db.zone_maps['month'][i]['max']
                 if not (m_max < start_code or m_min > end_code):
                     # Check Area overlap (Optimization: early prune if max area < y)
-                    a_max = db.zone_maps['Floor_Area'][i]['max']
+                    a_max = db.zone_maps['floor_area'][i]['max']
                     if a_max >= y:
                         valid_chunk_indices.append(i)
             
@@ -251,7 +251,7 @@ def run_queries(db, matric_num):
                 idx_end = min((chunk_idx + 1) * CHUNK_SIZE, db.row_count)
                 
                 # Retrieve slice for this chunk
-                chunk_months = db.columns['Month'][idx_start:idx_end]
+                chunk_months = db.columns['month'][idx_start:idx_end]
                 
                 # A. Filter Month
                 # Get local indices where month is in range
@@ -266,7 +266,7 @@ def run_queries(db, matric_num):
                 
                 # B. Filter Town (on survivors)
                 # Retrieve Town values for survivors
-                current_towns = db.columns['Town'][survivors]
+                current_towns = db.columns['town'][survivors]
                 # Check if town is in our target list
                 # np.isin is efficient for this
                 town_mask = np.isin(current_towns, town_encoded_ids)
@@ -277,7 +277,7 @@ def run_queries(db, matric_num):
                 survivors = survivors[town_mask]
                 
                 # C. Filter Floor Area (on survivors)
-                current_areas = db.columns['Floor_Area'][survivors]
+                current_areas = db.columns['floor_area'][survivors]
                 area_mask = current_areas >= y
                 
                 if not np.any(area_mask):
@@ -299,8 +299,8 @@ def run_queries(db, matric_num):
             matched_indices = np.array(matched_indices)
             
             # Calculate Price Per Sqm
-            prices = db.columns['Resale_Price'][matched_indices]
-            areas = db.columns['Floor_Area'][matched_indices]
+            prices = db.columns['resale_price'][matched_indices]
+            areas = db.columns['floor_area'][matched_indices]
             ppsm = prices / areas
             
             # Find Minimum
@@ -310,17 +310,17 @@ def run_queries(db, matric_num):
             
             # Prepare Result Record
             # Need to decode the integers back to strings
-            rec_month_str = db.decode_value('Month', db.columns['Month'][best_global_idx])
+            rec_month_str = db.decode_value('month', db.columns['month'][best_global_idx])
             rec_year = rec_month_str.split('-')[0]
             rec_mon = rec_month_str.split('-')[1]
             
-            rec_town = db.decode_value('Town', db.columns['Town'][best_global_idx])
-            rec_block = db.decode_value('Block', db.columns['Block'][best_global_idx]) # Block was encoded? No, Block is mixed. Check load.
+            rec_town = db.decode_value('town', db.columns['town'][best_global_idx])
+            rec_block = db.decode_value('block', db.columns['block'][best_global_idx]) # Block was encoded? No, Block is mixed. Check load.
             # In load, Block is encoded.
             
-            rec_flat_model = db.decode_value('Flat_Model', db.columns['Flat_Model'][best_global_idx])
-            rec_lease = db.columns['Lease_Commence_Date'][best_global_idx]
-            rec_area = db.columns['Floor_Area'][best_global_idx]
+            rec_flat_model = db.decode_value('flat_model', db.columns['flat_model'][best_global_idx])
+            rec_lease = db.columns['lease_commence_date'][best_global_idx]
+            rec_area = db.columns['floor_area'][best_global_idx]
             
             # Format: (x, y),Year,Month,Town,Block,Floor_Area,Flat_Model,Lease_Commence_Date,Price_Per_Square_Meter
             res_row = [
