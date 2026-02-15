@@ -37,7 +37,7 @@ class ColumnStoreDB:
         #   column "floor_area" -> [min floor area, max floor area] for each chunk
         #   column "resale_price" -> [min price, max price] for each chunk
         # Note that all these are stored as integers (after encoding) for efficiency.
-        self.zone_maps: list[list[int]] = []
+        self.zone_maps: list[list[list[int]]] = []
 
 
     def _get_month_sort_key(self, month_str):
@@ -52,6 +52,57 @@ class ColumnStoreDB:
         mmm = parts[0]
         yy = int(parts[1])
         return (yy, months.get(mmm, 0))
+    
+    def _log_database_state(self):
+        # Log the entire database to a file for debugging
+        # Helper function to convert numpy types to JSON-serializable Python types
+        def convert_to_serializable(obj):
+            if isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.ndarray):
+                return [convert_to_serializable(item) for item in obj.tolist()]
+            elif isinstance(obj, list):
+                return [convert_to_serializable(item) for item in obj]
+            elif isinstance(obj, dict):
+                return {k: convert_to_serializable(v) for k, v in obj.items()}
+            return obj
+        
+        database_state = {
+            "Column Store Database State": {
+                "Column Names": self.col_names,
+                "Value Code Mappers": [
+                    {
+                        col: {str(val): convert_to_serializable(code) for val, code in mapper.items()}
+                    }
+                    for col, mapper in enumerate(self.val_code_mapper)
+                ],
+                "Columns": [
+                    {
+                        col: convert_to_serializable(data)
+                    }
+                    for col, data in enumerate(self.columns)
+                ],
+                "Row Count": self.row_count,
+                "Number of Chunks": self.num_chunks,
+                "Zone Maps": [
+                    {
+                        col: {
+                            "Chunks": [
+                                {
+                                    chunk: convert_to_serializable(zone)
+                                }
+                                for chunk, zone in enumerate(zones)
+                            ]
+                        }
+                    }
+                    for col, zones in enumerate(self.zone_maps)
+                ]
+            }
+        }
+
+        database_file_path = os.path.join(os.path.dirname(__file__), 'Logs', 'database_state.json')
+        with open(database_file_path, 'w') as f:
+            json.dump(database_state, f, indent=2)
 
 
     def load_csv(self, filepath):
@@ -128,54 +179,8 @@ class ColumnStoreDB:
         del df_temp
         gc.collect()
 
-        # Log the entire database to a file for debugging
-        # Helper function to convert numpy types to JSON-serializable Python types
-        def convert_to_serializable(obj):
-            if isinstance(obj, np.integer):
-                return int(obj)
-            elif isinstance(obj, np.ndarray):
-                return [convert_to_serializable(item) for item in obj.tolist()]
-            elif isinstance(obj, list):
-                return [convert_to_serializable(item) for item in obj]
-            elif isinstance(obj, dict):
-                return {k: convert_to_serializable(v) for k, v in obj.items()}
-            return obj
-        
-        database_state = {
-            "Column Store Database State": {
-                "Column Names": self.col_names,
-                "Value Code Mappers": [
-                    {
-                        "Column": col,
-                        "Mappings": {str(val): convert_to_serializable(code) for val, code in mapper.items()}
-                    }
-                    for col, mapper in enumerate(self.val_code_mapper)
-                ],
-                "Columns": [
-                    {
-                        "Column": col,
-                        "Data": convert_to_serializable(data)
-                    }
-                    for col, data in enumerate(self.columns)
-                ],
-                "Row Count": self.row_count,
-                "Number of Chunks": self.num_chunks,
-                "Zone Maps": [
-                    {
-                        "Column": col,
-                        "Chunks": [
-                            {
-                                "Chunk": i,
-                                "Data": convert_to_serializable(zone)
-                            }
-                            for i, zone in enumerate(zones)
-                        ]
-                    }
-                    for col, zones in enumerate(self.zone_maps)
-                ]
-            }
-        }
+        # Log the database state after loading
+        self._log_database_state()
 
-        database_file_path = os.path.join(os.path.dirname(__file__), 'Logs', 'database_state.json')
-        with open(database_file_path, 'w') as f:
-            json.dump(database_state, f, indent=2)
+        print(f"Loaded CSV with {self.row_count} rows and {self.col_count} columns into Column Store Database.")
+
