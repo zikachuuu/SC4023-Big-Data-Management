@@ -3,140 +3,9 @@ import numpy as np
 import os
 import gc
 
-# ---------------------------------------------------------
-# CONFIGURATION & CONSTANTS
-# ---------------------------------------------------------
+from constants import INPUT_FILE, CHUNK_SIZE, TOWN_MAP_DIGIT, MONTH_MAP_DIGIT
+from columnStoreDB import ColumnStoreDB
 
-INPUT_FILE = os.path.join(os.path.dirname(__file__), 'ResalePricesSingapore.csv')
-CHUNK_SIZE = 1000  # Size for Zone Map chunks
-
-# Mapping from Matric Digit to Town (Source: Table 1)
-TOWN_MAP_DIGIT = {
-    0: "BEDOK", 1: "BUKIT PANJANG", 2: "CLEMENTI", 3: "CHOA CHU KANG", 4: "HOUGANG",
-    5: "JURONG WEST", 6: "PASIR RIS", 7: "TAMPINES", 8: "WOODLANDS", 9: "YISHUN"
-}
-
-# Mapping for Matric Month (Source: Description)
-# 1->Jan, 2->Feb... 9->Sep, 0->Oct
-MONTH_MAP_DIGIT = {
-    1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, 0: 10
-}
-
-# ---------------------------------------------------------
-# COLUMN STORE CLASS
-# ---------------------------------------------------------
-
-class ColumnStoreDB:
-    def __init__(self):
-        self.columns = {} # Stores numpy arrays: name -> array
-        self.dictionaries = {} # Stores lookup tables for encoding: name -> list
-        self.row_count = 0
-        self.headers = []
-        self.zone_maps = {} # name -> [{'min': val, 'max': val}, ...]
-
-    def load_csv(self, filepath):
-        print(f"Loading {filepath}...")
-        data_buffer = {}
-        
-        with open(filepath, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f)
-            self.headers = next(reader)
-            
-            # Initialize lists for each column
-            for h in self.headers:
-                data_buffer[h] = []
-            
-            # Read rows
-            for row in reader:
-                for i, val in enumerate(row):
-                    data_buffer[self.headers[i]].append(val)
-                    
-        self.row_count = len(data_buffer[self.headers[0]])
-        print(f"Loaded {self.row_count} rows.")
-
-        # Convert to initial numpy arrays (as strings/objects first)
-        for h in self.headers:
-            self.columns[h] = np.array(data_buffer[h])
-        
-        # Clean up buffer
-        del data_buffer
-        gc.collect()
-
-    def optimize(self):
-        print("Starting optimizations...")
-        
-        # --- 1. Dictionary Encoding (Compression) ---
-        # We need to encode strings to integers. 
-        # Crucial: Dictionaries must be sorted to allow range queries if needed later.
-        
-        # Columns to encode (Strings)
-        enc_cols = ['month', 'town', 'flat_type', 'block', 'street_name', 'flat_model', 'storey_range']
-        
-        for col in enc_cols:
-            unique_vals = np.unique(self.columns[col])
-            # np.unique returns sorted unique elements
-            self.dictionaries[col] = unique_vals
-            
-            # Map values to integers
-            # np.searchsorted finds indices where elements should be inserted to maintain order -> efficient mapping
-            self.columns[col] = np.searchsorted(unique_vals, self.columns[col]).astype(np.int32)
-            
-        # Convert numeric columns explicitly
-        self.columns['floor_area'] = self.columns['floor_area'].astype(np.float32)
-        self.columns['resale_price'] = self.columns['resale_price'].astype(np.float32)
-        # Lease_Commence_Date is purely int in the file usually
-        self.columns['lease_commence_date'] = self.columns['lease_commence_date'].astype(np.int32)
-
-        # --- 2. Sorting ---
-        # Sort order: Month -> Town -> Floor Area -> Resale Price
-        print("Sorting data...")
-        
-        # lexsort sorts by keys in reverse order (last key is primary)
-        sort_indices = np.lexsort((
-            self.columns['resale_price'],
-            self.columns['floor_area'],
-            self.columns['town'],
-            self.columns['month']
-        ))
-        
-        # Reorder ALL columns based on sort_indices
-        for col in self.headers:
-            self.columns[col] = self.columns[col][sort_indices]
-            
-        # --- 3. Zone Maps ---
-        # Create min/max metadata for chunks
-        print("Building Zone Maps...")
-        num_chunks = (self.row_count + CHUNK_SIZE - 1) // CHUNK_SIZE
-        
-        # We only strictly need zone maps for filter columns: month, town, floor_area
-        zone_cols = ['month', 'town', 'floor_area']
-        
-        for col in zone_cols:
-            self.zone_maps[col] = []
-            arr = self.columns[col]
-            for i in range(num_chunks):
-                start = i * CHUNK_SIZE
-                end = min((i + 1) * CHUNK_SIZE, self.row_count)
-                chunk = arr[start:end]
-                self.zone_maps[col].append({
-                    'min': np.min(chunk),
-                    'max': np.max(chunk)
-                })
-
-    def decode_value(self, col_name, encoded_val):
-        """Helper to get original string back from int code"""
-        if col_name in self.dictionaries:
-            return self.dictionaries[col_name][encoded_val]
-        return encoded_val
-
-    def get_month_int(self, year_str, month_str):
-        """Converts 'YYYY', 'MM' inputs into the encoded integer for the 'month' column"""
-        s = f"{year_str}-{str(month_str).zfill(2)}"
-        # Find index in dictionary
-        idx = np.searchsorted(self.dictionaries['month'], s)
-        if idx < len(self.dictionaries['month']) and self.dictionaries['month'][idx] == s:
-            return idx
-        return -1 # Not found
 
 # ---------------------------------------------------------
 # QUERY LOGIC
@@ -362,15 +231,6 @@ if __name__ == "__main__":
     db = ColumnStoreDB()
     if os.path.exists(INPUT_FILE):
         db.load_csv(INPUT_FILE)
-        
-        # 2. Optimize
-        db.optimize()
-        
-        # 3. User Interaction
-        user_matric = input("Enter Matriculation Number (e.g., A6626226B): ").strip().upper()
-        
-        # 4. Run Query
-        run_queries(db, user_matric)
         
         # 5. Clean up
         del db
