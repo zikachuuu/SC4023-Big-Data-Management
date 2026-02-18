@@ -3,7 +3,7 @@ import numpy as np
 import os
 import gc
 
-from constants import INPUT_FILE, CHUNK_SIZE, TOWN_MAP_DIGIT, MONTH_MAP_DIGIT
+from constants import INPUT_FILE, CHUNK_SIZE, TOWN_MAP_DIGIT
 from columnStoreDB import ColumnStoreDB
 
 
@@ -11,14 +11,13 @@ from columnStoreDB import ColumnStoreDB
 # QUERY LOGIC
 # ---------------------------------------------------------
 
-def parse_matric(matric):
+def parse_matriculation(matriculation_num):
     """
-    Parses matric number based on rules.
-    Format: A<7 digits>B
+    Retrieve the target start year, start month, and target towns from the matriculation number.
     """
-    digits = [int(c) for c in matric if c.isdigit()]
-    if len(digits) != 7:
-        raise ValueError("Invalid Matriculation Number: Must have 7 digits.")
+
+    # Split the matriculation number into digits
+    digits = [int(d) for d in matriculation_num if d.isdigit()]
     
     # 1. Target Year (Last Digit)
     # Rule: 5->2015 ... 9->2019, 0->2020 ... 4->2024
@@ -31,23 +30,21 @@ def parse_matric(matric):
     # 2. Start Month (2nd Last Digit)
     # Rule: 0->Oct, 1->Jan...
     sec_last_digit = digits[-2]
-    start_month = MONTH_MAP_DIGIT.get(sec_last_digit, 1) # default to Jan if issue
+    start_month = sec_last_digit if sec_last_digit != 0 else 10
     
     # 3. Towns (Set of all digits)
-    target_towns_idx = []
     unique_digits = set(digits)
-    
-    # We need to map these to the DB's internal encoding for Towns
-    # First get string names
-    town_names = [TOWN_MAP_DIGIT[d] for d in unique_digits if d in TOWN_MAP_DIGIT]
+    town_names = [TOWN_MAP_DIGIT[d] for d in unique_digits]
     
     return target_year, start_month, town_names
+
+
 
 def run_queries(db, matric_num):
     print(f"\nProcessing Matric: {matric_num}")
     
     try:
-        start_year, start_month, town_names = parse_matric(matric_num)
+        start_year, start_month, town_names = parse_matriculation(matric_num)
     except Exception as e:
         print(f"Error parsing matric: {e}")
         return
@@ -227,12 +224,20 @@ def run_queries(db, matric_num):
 # ---------------------------------------------------------
 
 if __name__ == "__main__":
-    # 1. Init and Load
     db = ColumnStoreDB()
+    print ("Database Initialized.")
+    print ("Loading CSV into Column Store Database...")
+
     if os.path.exists(INPUT_FILE):
         db.load_csv(INPUT_FILE)
+
+        print ("Database loaded.")
+        matriculation_number = input("Enter your matriculation number (e.g. A0123456B): ")
+        (start_year, start_month, town_names) = parse_matriculation(matriculation_number)
+
+        print (f"Parsed Matriculation: Start Year={start_year}, Start Month={start_month}, Towns={town_names}")
+        print ("Running Queries for x in [1, 8], y in [80, 150]...")
         
-        # 5. Clean up
         del db
         gc.collect()
         
