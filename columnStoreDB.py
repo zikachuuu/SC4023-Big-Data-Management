@@ -108,6 +108,15 @@ class ColumnStoreDB:
     def load_csv(self, filepath):
         # 1. Load the raw data
         df_temp: pd.DataFrame   = pd.read_csv(filepath)
+        
+        # Handle month column splitting (if it exists)
+        if "month" in df_temp.columns:
+            month_split = df_temp["month"].str.split('-', expand=True)
+            df_temp["month"] = month_split[0]  # Keep month name (Jan, Feb, etc.)
+            # Insert year column right after month
+            month_idx = df_temp.columns.get_loc("month")
+            df_temp.insert(month_idx + 1, "year", month_split[1])
+        
         self.row_count          = len(df_temp)
         self.col_count          = len(df_temp.columns)
         self.col_names          = {col_name: i for i, col_name in enumerate(df_temp.columns)}
@@ -122,20 +131,13 @@ class ColumnStoreDB:
             unique_vals: np.ndarray = df_temp[col_name].unique()
 
             if col_name == "month":
-                # Special sorting for MMM-YY
-                # We sort the unique values based on the (Year, Month) tuple
-                sorted_unique_vals = sorted(unique_vals, key=self._get_month_sort_key)
-                sorted_unique_vals = np.array(sorted_unique_vals)
+                # Use Custom mapping for Month to preserve chronological order (Jan < Feb < ... < Dec)
+                self.val_code_mapper[col_idx] = {key: val for key, val in MONTH_MAP_DIGIT.items()}
             else:
                 # Standard sorting (Lexicographical for strings, Numeric for ints)
-                try:
-                    sorted_unique_vals = np.sort(unique_vals)
-                except:
-                    # Fallback for mixed types, though unlikely in clean CSVs
-                    sorted_unique_vals = np.array(sorted(list(unique_vals), key=str))
-
-            # Stores the Original Value -> Integer Code mapping for this column
-            self.val_code_mapper[col_idx] = {val: idx for idx, val in enumerate(sorted_unique_vals)}
+                sorted_unique_vals = np.sort(unique_vals)
+                # Stores the Original Value -> Integer Code mapping for this column
+                self.val_code_mapper[col_idx] = {val: idx for idx, val in enumerate(sorted_unique_vals)}
 
             # Map the original column to integers
             encoded_col: np.ndarray = df_temp[col_name].map(self.val_code_mapper[col_idx]).to_numpy(dtype=np.int32)
@@ -148,7 +150,7 @@ class ColumnStoreDB:
             zone_maps_col = []
 
             # Determine if this column needs a zone map
-            if col_name in ["month", "floor_area", "resale_price"]:
+            if col_name in ["month", "year", "floor_area", "resale_price"]:
                 # Min/Max Zone Map
                 for i in range(self.num_chunks):
                     start_idx   : int           = i * CHUNK_SIZE

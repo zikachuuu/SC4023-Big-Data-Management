@@ -14,8 +14,8 @@ TOWN_MAP_DIGIT = {
     5: "JURONG WEST", 6: "PASIR RIS", 7: "TAMPINES", 8: "WOODLANDS", 9: "YISHUN"
 }
 
-# Mapping for Matric Month (Source: Description)
-# 1->Jan, 2->Feb... 9->Sep, 0->Oct
+# Mapping from Month to Digit
 MONTH_MAP_DIGIT = {
-    1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, 0: 10
+    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+    "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12
 }
