@@ -23,9 +23,9 @@ def parse_matriculation(matriculation_num):
     # Rule: 5->2015 ... 9->2019, 0->2020 ... 4->2024
     last_digit = digits[-1]
     if last_digit >= 5:
-        target_year = 2010 + last_digit
+        target_year = 10 + last_digit
     else:
-        target_year = 2020 + last_digit
+        target_year = 20 + last_digit
         
     # 2. Start Month (2nd Last Digit)
     # Rule: 0->Oct, 1->Jan...

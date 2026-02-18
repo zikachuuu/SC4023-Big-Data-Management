@@ -38,20 +38,6 @@ class ColumnStoreDB:
         #   column "resale_price" -> [min price, max price] for each chunk
         # Note that all these are stored as integers (after encoding) for efficiency.
         self.zone_maps: list[list[list[int]]] = []
-
-
-    def _get_month_sort_key(self, month_str):
-        """
-        Parses 'MMM-YY' (e.g., 'Jan-15') into a tuple (year, month_index) for sorting.
-        """
-        months = {
-            "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
-            "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12
-        }
-        parts = month_str.split('-')
-        mmm = parts[0]
-        yy = int(parts[1])
-        return (yy, months.get(mmm, 0))
     
     def _log_database_state(self):
         # Log the entire database to a file for debugging
