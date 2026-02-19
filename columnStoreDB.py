@@ -22,6 +22,9 @@ class ColumnStoreDB:
         # To access the column, use the column index from col_names
         self.val_code_mapper: list[dict[str | int, int]] = [] 
 
+        # Reverse mapping for decoding integer codes back to original values
+        self.code_val_mapper: list[dict[int, str | int]] = []  
+
         # Main Column Store data structure: List of numpy arrays, one for each column
         # Likewise, to access a column, use the column index from col_names
         # The data in these columns are the integer codes after mapping from original values using val_code_mapper
@@ -46,6 +49,7 @@ class ColumnStoreDB:
         # The metedata in the zone maps are stored in terms of the integer codes after mapping from original values using val_code_mapper
         self.zone_maps: list[list[list[int]]] = []
     
+
     def _log_database_state(self):
         # Log the entire database to a file for debugging
         # Helper function to convert numpy types to JSON-serializable Python types
@@ -68,6 +72,12 @@ class ColumnStoreDB:
                         col: {str(val): convert_to_serializable(code) for val, code in mapper.items()}
                     }
                     for col, mapper in enumerate(self.val_code_mapper)
+                ],
+                "Code Value Mappers": [
+                    {
+                        col: {code: convert_to_serializable(val) for code, val in mapper.items()}
+                    }
+                    for col, mapper in enumerate(self.code_val_mapper)
                 ],
                 "Columns": [
                     {
@@ -114,6 +124,7 @@ class ColumnStoreDB:
         self.col_names          = {col_name: i for i, col_name in enumerate(df_temp.columns)}
 
         self.val_code_mapper    = [None] * self.col_count  # Placeholder for the value to code mapping for each column
+        self.code_val_mapper    = [None] * self.col_count  # Placeholder for the code to value mapping for each column
         self.columns            = [None] * self.col_count  # Placeholder for the encoded columns
         self.zone_maps          = [None] * self.col_count  # Placeholder for the zone maps for each column
 
@@ -125,11 +136,17 @@ class ColumnStoreDB:
             if col_name == "month":
                 # Use Custom mapping for Month to preserve chronological order (Jan < Feb < ... < Dec)
                 self.val_code_mapper[col_idx] = {key: val for key, val in MONTH_MAP_DIGIT.items()}
+
+                # Reverse mapping for decoding integer codes back to original month names
+                self.code_val_mapper[col_idx] = {val: key for key, val in MONTH_MAP_DIGIT.items()}
             else:
                 # Standard sorting (Lexicographical for strings, Numeric for ints)
                 sorted_unique_vals = np.sort(unique_vals)
                 # Stores the Original Value -> Integer Code mapping for this column
                 self.val_code_mapper[col_idx] = {val: idx for idx, val in enumerate(sorted_unique_vals)}
+
+                # Stores the Integer Code -> Original Value mapping for this column
+                self.code_val_mapper[col_idx] = {idx: val for idx, val in enumerate(sorted_unique_vals)}
 
             # Map the original column to integers
             encoded_col: np.ndarray = df_temp[col_name].map(self.val_code_mapper[col_idx]).to_numpy(dtype=np.int32)

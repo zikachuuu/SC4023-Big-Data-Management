@@ -10,34 +10,7 @@ from datetime import datetime
 from constants import INPUT_FILE, CHUNK_SIZE, TOWN_MAP_DIGIT
 from columnStoreDB import ColumnStoreDB
 from collections import deque
-
-
-def configure_logging() -> logging.Logger:
-    logs_dir = os.path.join(os.path.dirname(__file__), "Logs")
-    os.makedirs(logs_dir, exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = os.path.join(logs_dir, f"run_{timestamp}.log")
-
-    logger = logging.getLogger("column_store_db")
-    logger.setLevel(logging.DEBUG)
-    logger.propagate = False
-
-    logger.handlers.clear()
-
-    file_handler = logging.FileHandler(log_path)
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
-
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
-
-    logger.addHandler(file_handler)
-    logger.addHandler(console_handler)
-
-    logger.info(f"Logging initialized. File: {log_path}")
-    return logger
+from utility import configure_logging
 
 
 def parse_matriculation(matriculation_num):
@@ -74,8 +47,8 @@ def run_queries(
         target_start_year   : int, 
         target_start_month  : int, 
         target_town_names   : list[str], 
-    matric_num          : str,
-    logger              : logging.Logger
+        matric_num          : str,
+        logger              : logging.Logger
     ):
 
     # ---------------------------------------------------------
@@ -86,9 +59,10 @@ def run_queries(
     #   Inner List 0: [(start month, end month) for each query]
     #   Inner List 1: [(start year, end year) for each query]
     #   Inner List 2: [min floor area for each query] 
+    #   Inner List 3: [(x, y) for each query] (for tracking)
     # The index of each element in the inner list corresponds to the query index
     # This allow us to scan each column in the database no more than once, and for each column, we can check the condition for all queries at once
-    queries = [[], [], []]
+    queries = [[], [], [], []]
     num_queries = 0
 
     for x in range(1, 9):
@@ -102,6 +76,7 @@ def run_queries(
             queries[0].append((target_start_month, target_end_month))
             queries[1].append((target_start_year, target_end_year))
             queries[2].append(target_min_floor_area)
+            queries[3].append((x, y)) 
 
     # List of queues to hold the valid rows for each query (one queue per query)
     # The queues are initially empty and will be populated with the row indices that satisfy the conditions of each query as we scan through the columns
@@ -117,6 +92,7 @@ def run_queries(
     logger.info("Scanning month column...")
     month_col_idx           : int               = db.col_names["month"]             # Column index for month
     month_val_code_mapper   : dict[str, int]    = db.val_code_mapper[month_col_idx] # Original Value (e.g. "Jan") -> Integer Code mapping for month column
+    month_code_val_mapper   : dict[int, str]    = db.code_val_mapper[month_col_idx] # Integer Code -> Original Value (e.g. "Jan") mapping for month column
     month_col               : np.ndarray        = db.columns[month_col_idx]         # Encoded month column (integer codes)
     month_zone_maps         : list[list[int]]   = db.zone_maps[month_col_idx]       # Zone maps for month column (list of [min_code, max_code] for each chunk)
 
@@ -171,11 +147,13 @@ def run_queries(
     total_after_month = sum(len(rows) for rows in valid_rows)
     logger.info(f"Month scan complete. Total candidate rows across queries: {total_after_month}")
 
+
     # -------------------------------------------
     # 2. Scan year column
     # -------------------------------------------
     year_col_idx        : int               = db.col_names["year"]
     year_val_code_mapper: dict[int, int]    = db.val_code_mapper[year_col_idx]
+    year_code_val_mapper: dict[int, int]    = db.code_val_mapper[year_col_idx]
     year_col            : np.ndarray        = db.columns[year_col_idx]
     year_zone_maps      : list[list[int]]   = db.zone_maps[year_col_idx]
 
@@ -218,6 +196,7 @@ def run_queries(
     # -------------------------------------------
     town_col_idx        : int               = db.col_names["town"]
     town_val_code_mapper: dict[str, int]    = db.val_code_mapper[town_col_idx]
+    town_code_val_mapper: dict[int, str]    = db.code_val_mapper[town_col_idx]
     town_col            : np.ndarray        = db.columns[town_col_idx]
     town_zone_maps      : list[list[int]]   = db.zone_maps[town_col_idx]
 
@@ -257,6 +236,7 @@ def run_queries(
     # -------------------------------------------
     floor_area_col_idx        : int               = db.col_names["floor_area_sqm"]
     floor_area_val_code_mapper: dict[int, int]    = db.val_code_mapper[floor_area_col_idx]
+    floor_area_code_val_mapper: dict[int, int]    = db.code_val_mapper[floor_area_col_idx]
     floor_area_col            : np.ndarray        = db.columns[floor_area_col_idx]
     floor_area_zone_maps      : list[list[int]]   = db.zone_maps[floor_area_col_idx]
 
@@ -313,16 +293,92 @@ def run_queries(
         logger.debug(f"Query {query_idx + 1}: Start Month={queries[0][query_idx][0]}, End Month={queries[0][query_idx][1]}, Start Year={queries[1][query_idx][0]}, End Year={queries[1][query_idx][1]}, Min Floor Area={queries[2][query_idx]} -> Number of Matching Rows: {len(valid_rows[query_idx])}")
 
     logger.info("All query scans completed.")
+    logger.info("Selecting row with least psm among the valid rows for each query and writing results to log file...")
 
+    # For each query, we select the row with the least psm among the valid rows for this query
+    # Where psm = resale_price / floor_area
 
+    # List to hold (row_idx, psm) for the row with least psm for each query
+    # If there is no valid row for a query, we will store (None, None) for that query
+    min_psm_results: list[tuple[int | None, float | None]] = []  
+
+    resale_price_col_idx        : int               = db.col_names["resale_price"]
+    resale_price_val_code_mapper: dict[int, int]    = db.val_code_mapper[resale_price_col_idx]
+    resale_price_code_val_mapper: dict[int, int]    = db.code_val_mapper[resale_price_col_idx]
+    resale_price_col            : np.ndarray        = db.columns[resale_price_col_idx]
+    resale_price_zone_maps      : list[list[int]]   = db.zone_maps[resale_price_col_idx]
+
+    for query_idx in range(num_queries):
+        
+        min_psm = math.inf
+        min_psm_row_idx = None
+
+        for row_idx in valid_rows[query_idx]:
+
+            resale_price    : int   = resale_price_code_val_mapper[resale_price_col[row_idx]]  
+            floor_area      : float = floor_area_code_val_mapper[floor_area_col[row_idx]] 
+            psm = resale_price / floor_area
+
+            if psm < min_psm:
+                min_psm = psm
+                min_psm_row_idx = row_idx
+
+        if min_psm_row_idx is not None:
+            min_psm_results.append((min_psm_row_idx, min_psm))
+        else:
+            min_psm_results.append((None, None))
+
+    logger.info("Selection of rows with least psm completed. Writing final results to CSV file...")
+
+    # Save to ScanResult_<matriculation_number>.csv in Results folder
+    results_dir = os.path.join(os.path.dirname(__file__), "Results")
+    os.makedirs(results_dir, exist_ok=True)
+    results_file_path = os.path.join(results_dir, f"ScanResult_{matric_num}.csv")
+
+    with open(results_file_path, 'w', newline='') as csvfile:
+        csv_writer = csv.writer(csvfile)
+        csv_writer.writerow(["(x,y)", "Year", "Month", "Town", "Block", "Floor_Area", "Flat_Model", 'Lease_Commence_Date', "Price_Per_Square_Meter"])
+
+        for query_idx, (min_psm_row_idx, min_psm) in enumerate(min_psm_results):
+            x: int = queries[3][query_idx][0]
+            y: int = queries[3][query_idx][1]
+
+            
+            if min_psm_row_idx is not None:
+                block_code_val_mapper: dict[int, str] = db.code_val_mapper[db.col_names["block"]]
+                block_col: np.ndarray = db.columns[db.col_names["block"]]
+
+                flat_model_code_val_mapper: dict[int, str] = db.code_val_mapper[db.col_names["flat_model"]]
+                flat_model_col: np.ndarray = db.columns[db.col_names["flat_model"]]
+
+                lease_commence_date_code_val_mapper: dict[int, int] = db.code_val_mapper[db.col_names["lease_commence_date"]]
+                lease_commence_date_col: np.ndarray = db.columns[db.col_names["lease_commence_date"]]
+
+                month               : str   = month_code_val_mapper[month_col[min_psm_row_idx]]
+                year                : int   = year_code_val_mapper[year_col[min_psm_row_idx]]
+                town                : str   = town_code_val_mapper[town_col[min_psm_row_idx]]
+                block               : str   = block_code_val_mapper[block_col[min_psm_row_idx]]
+                floor_area          : float = floor_area_code_val_mapper[floor_area_col[min_psm_row_idx]]
+                flat_model          : str   = flat_model_code_val_mapper[flat_model_col[min_psm_row_idx]]
+                lease_commence_date : int   = lease_commence_date_code_val_mapper[lease_commence_date_col[min_psm_row_idx]]
+
+                csv_writer.writerow([f"({x},{y})", year, month, town, block, floor_area, flat_model, lease_commence_date, min_psm])
+            else:
+                csv_writer.writerow([f"({x},{y})", "No Result", "No Result", "No Result", "No Result", "No Result", "No Result", "No Result", "No Result"])
+
+    logger.info(f"Results written to {results_file_path}")
 
 # ---------------------------------------------------------
 # MAIN EXECUTION
 # ---------------------------------------------------------
 
 if __name__ == "__main__":
-    logger = configure_logging()
+
+    matriculation_number = input("Enter your matriculation number (e.g. A0123456B): ")
+
+    logger = configure_logging(matriculation_number)
     db = ColumnStoreDB()
+
     logger.info("Database initialized.")
     logger.info("Loading CSV into Column Store Database...")
 
@@ -330,7 +386,7 @@ if __name__ == "__main__":
         db.load_csv(INPUT_FILE)
 
         logger.info("Database loaded.")
-        matriculation_number = input("Enter your matriculation number (e.g. A0123456B): ")
+
         (start_year, start_month, town_names) = parse_matriculation(matriculation_number)
 
         logger.info(f"Parsed Matriculation: Start Year={start_year}, Start Month={start_month}, Towns={town_names}")
