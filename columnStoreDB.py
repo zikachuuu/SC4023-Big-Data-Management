@@ -4,7 +4,6 @@ import numpy as np
 import os
 import gc
 import pandas as pd
-from typing import Any
 import math
 
 from constants import INPUT_FILE, CHUNK_SIZE, TOWN_MAP_DIGIT, MONTH_MAP_DIGIT
@@ -12,16 +11,17 @@ from constants import INPUT_FILE, CHUNK_SIZE, TOWN_MAP_DIGIT, MONTH_MAP_DIGIT
 class ColumnStoreDB:
     def __init__(self):
 
-        # Dictionary to map column names to their index in the self.columns list
+        # Dictionary to map column names to their column indexes (eg. "month" -> 0, "town" -> 1, etc.)
         self.col_names: dict[str, int] = {}
 
-        # Compression: For each column, we mapped the increasingly sorted unique values (strings or int) to integers starting from 0.
+        # Compression: For each column, we mapped the increasingly sorted unique values (strings or int) to integer codes starting from 0.
         # This saves space and allows for faster comparisons.
         # To access the column, use the column index from col_names
-        self.val_code_mapper: list[dict[Any, int]] = [] 
+        self.val_code_mapper: list[dict[str | int, int]] = [] 
 
         # Main Column Store data structure: List of numpy arrays, one for each column
         # Likewise, to access a column, use the column index from col_names
+        # The data in these columns are the integer codes after mapping from original values using val_code_mapper
         self.columns: list[np.ndarray] = []
 
         # Number of rows and columns in the dataset
@@ -32,11 +32,15 @@ class ColumnStoreDB:
         self.num_chunks: int = 0
 
         # Zone Maps: For selected columns, we will store a list of metavalues for each chunk of rows (based on CHUNK_SIZE)
-        #   column "month" -> [earliest month, latest month] for each chunk
-        #   column "town" -> [towns that appeared in the chunk]
-        #   column "floor_area" -> [min floor area, max floor area] for each chunk
-        #   column "resale_price" -> [min price, max price] for each chunk
-        # Note that all these are stored as integers (after encoding) for efficiency.
+        # Outer list: Index corresponds to column index
+        # Middle list: Index corresponds to chunk index
+        # Inner list: Stores the metadata for that chunk. The content depends on the column:
+        #   column "month"          -> [earliest month, latest month] for each chunk
+        #   column "year"           -> [earliest year, latest year] for each chunk
+        #   column "town"           -> [towns that appeared in the chunk]
+        #   column "floor_area"     -> [min floor area, max floor area] for each chunk
+        #   Other columns           -> No zone map (empty list)
+        # The metedata in the zone maps are stored in terms of the integer codes after mapping from original values using val_code_mapper
         self.zone_maps: list[list[list[int]]] = []
     
     def _log_database_state(self):
@@ -92,16 +96,15 @@ class ColumnStoreDB:
 
 
     def load_csv(self, filepath):
-        # 1. Load the raw data
+        # Load the raw data
         df_temp: pd.DataFrame   = pd.read_csv(filepath)
         
-        # Handle month column splitting (if it exists)
-        if "month" in df_temp.columns:
-            month_split = df_temp["month"].str.split('-', expand=True)
-            df_temp["month"] = month_split[0]  # Keep month name (Jan, Feb, etc.)
-            # Insert year column right after month
-            month_idx = df_temp.columns.get_loc("month")
-            df_temp.insert(month_idx + 1, "year", month_split[1])
+        # Split the "month" column into "month" and "year", and insert the "year" column right after "month"
+        month_split = df_temp["month"].str.split('-', expand=True)
+        df_temp["month"] = month_split[0]  # Keep month name (Jan, Feb, etc.)
+
+        month_idx = df_temp.columns.get_loc("month") # Insert year column right after month
+        df_temp.insert(month_idx + 1, "year", month_split[1].astype(int))  # Convert year to int
         
         self.row_count          = len(df_temp)
         self.col_count          = len(df_temp.columns)
@@ -111,7 +114,7 @@ class ColumnStoreDB:
         self.columns            = [None] * self.col_count  # Placeholder for the encoded columns
         self.zone_maps          = [None] * self.col_count  # Placeholder for the zone maps for each column
 
-        # 2. Process Column by Column
+        # Process Column by Column
         for (col_name, col_idx) in self.col_names.items():
             
             unique_vals: np.ndarray = df_temp[col_name].unique()
