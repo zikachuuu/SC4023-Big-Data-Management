@@ -159,8 +159,8 @@ def run_queries(
 
     for query_idx, (target_start_year, target_end_year) in enumerate(queries[1]):
 
-        start_year_code = year_val_code_mapper[target_start_year]
-        end_year_code   = year_val_code_mapper[target_end_year]
+        target_start_year_code = year_val_code_mapper[target_start_year]
+        target_end_year_code   = year_val_code_mapper[target_end_year]
 
         # We iterate each valid row index from the month scan for this query, 
         # check if the year of this row satisfies the year condition for this query, if not, we remove this row index from the queue for this query
@@ -171,10 +171,28 @@ def run_queries(
             row_idx = valid_rows[query_idx].popleft()  # Pop a row index from the queue
             year_code = year_col[row_idx]
 
-            if start_year_code <= year_code <= end_year_code:
+            if target_start_year_code <= year_code <= target_end_year_code:
                 # Unlike month, start_year_code is always smaller than or equal to end_year_code 
                 # This row is still valid for this query, keep it in temp_queue
+
+                # If year_code = target_start_year_code, we need to check for this row
+                # whether the month is greater than or equal to target_start_month for this query, if not, this row is not valid for this query
+                if target_start_year_code == year_code:
+                    month_code = month_col[row_idx]
+                    target_start_month, _ = queries[0][query_idx]
+                    if month_code < target_start_month:
+                        continue  # This row does not satisfy the month condition for this query, skip it
+
+                # If year_code = target_end_year_code, we need to check for this row
+                # whether the month is less than or equal to target_end_month for this query, if not, this row is not valid for this query
+                if target_end_year_code == year_code:
+                    month_code = month_col[row_idx]
+                    _, target_end_month = queries[0][query_idx]
+                    if month_code > target_end_month:
+                        continue  # This row does not satisfy the month condition for this query, skip it
+
                 temp_queue.append(row_idx)
+
             else:
                 # This row does not satisfy the year condition, do nothing (i.e., don't add it to temp_queue)
                 pass
@@ -354,8 +372,8 @@ def run_queries(
                 lease_commence_date_code_val_mapper: dict[int, int] = db.code_val_mapper[db.col_names["lease_commence_date"]]
                 lease_commence_date_col: np.ndarray = db.columns[db.col_names["lease_commence_date"]]
 
-                month               : str   = month_code_val_mapper[month_col[min_psm_row_idx]]
-                year                : int   = year_code_val_mapper[year_col[min_psm_row_idx]]
+                month               : str   = str(month_code_val_mapper[month_col[min_psm_row_idx]]).zfill(2)
+                year                : str   = "20" + str(year_code_val_mapper[year_col[min_psm_row_idx]])
                 town                : str   = town_code_val_mapper[town_col[min_psm_row_idx]]
                 block               : str   = block_code_val_mapper[block_col[min_psm_row_idx]]
                 floor_area          : float = floor_area_code_val_mapper[floor_area_col[min_psm_row_idx]]
