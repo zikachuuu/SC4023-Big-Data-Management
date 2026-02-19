@@ -4,10 +4,40 @@ import os
 import gc
 import json
 import math
+import logging
+from datetime import datetime
 
 from constants import INPUT_FILE, CHUNK_SIZE, TOWN_MAP_DIGIT
 from columnStoreDB import ColumnStoreDB
 from collections import deque
+
+
+def configure_logging() -> logging.Logger:
+    logs_dir = os.path.join(os.path.dirname(__file__), "Logs")
+    os.makedirs(logs_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = os.path.join(logs_dir, f"run_{timestamp}.log")
+
+    logger = logging.getLogger("column_store_db")
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+
+    logger.handlers.clear()
+
+    file_handler = logging.FileHandler(log_path)
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+
+    logger.info(f"Logging initialized. File: {log_path}")
+    return logger
 
 
 def parse_matriculation(matriculation_num):
@@ -39,14 +69,25 @@ def parse_matriculation(matriculation_num):
 
 
 
-def run_queries(db, target_start_year, target_start_month, target_town_names, matric_num):
+def run_queries(
+        db                  : ColumnStoreDB, 
+        target_start_year   : int, 
+        target_start_month  : int, 
+        target_town_names   : list[str], 
+    matric_num          : str,
+    logger              : logging.Logger
+    ):
+
+    # ---------------------------------------------------------
+    # Defining Queries
+    # ---------------------------------------------------------
 
     # List of list to hold query in a "column store" like format. 
     #   Inner List 0: [(start month, end month) for each query]
     #   Inner List 1: [(start year, end year) for each query]
     #   Inner List 2: [min floor area for each query] 
-    # The index of the inner list corresponds to the query index
-    # This allow us to do shared scan (process all queries in one pass)
+    # The index of each element in the inner list corresponds to the query index
+    # This allow us to scan each column in the database no more than once, and for each column, we can check the condition for all queries at once
     queries = [[], [], []]
     num_queries = 0
 
@@ -54,27 +95,26 @@ def run_queries(db, target_start_year, target_start_month, target_town_names, ma
         for y in range(80, 151):
             num_queries += 1
 
-            target_end_year = target_start_year + (target_start_month + x - 1) // 12
-            target_end_month = (target_start_month + x - 1) % 12 + 1  
-            target_min_floor_area = y
+            target_end_year         : int = target_start_year + (target_start_month + x - 1) // 12
+            target_end_month        : int = (target_start_month + x - 1) % 12 + 1  
+            target_min_floor_area   : int = y
 
             queries[0].append((target_start_month, target_end_month))
             queries[1].append((target_start_year, target_end_year))
             queries[2].append(target_min_floor_area)
 
-    
-    # ---------------------------------------------------------
-    # Scanning: We scan each column once only
-    # ---------------------------------------------------------
-
-    # List of queues to hold the valid rows for each query (empty at the start)
+    # List of queues to hold the valid rows for each query (one queue per query)
+    # The queues are initially empty and will be populated with the row indices that satisfy the conditions of each query as we scan through the columns
+    # If a row does not satify the condition of a column for a query, it will be removed from the queue for that query and will not be considered in the subsequent column scans for that query
     valid_rows: list[deque[int]] = [
-        deque() for _ in range(num_queries)  # Assuming all inner lists in queries have the same length
+        deque() for _ in range(num_queries)  
     ]
+
 
     # ------------------------------------------
     # 1. Scan month column
     # ------------------------------------------
+    logger.info("Scanning month column...")
     month_col_idx           : int               = db.col_names["month"]             # Column index for month
     month_val_code_mapper   : dict[str, int]    = db.val_code_mapper[month_col_idx] # Original Value (e.g. "Jan") -> Integer Code mapping for month column
     month_col               : np.ndarray        = db.columns[month_col_idx]         # Encoded month column (integer codes)
@@ -82,15 +122,32 @@ def run_queries(db, target_start_year, target_start_month, target_town_names, ma
 
     for query_idx, (target_start_month, target_end_month) in enumerate(queries[0]):
 
-        # month and month code are actually the same (1 to 12)]
-        # so val_code_mapper is not used
+        # target_start_month and target_end_month are currently encoded in the same way as that in month_val_code_mapper
+        # i.e. "Jan" -> 1, "Feb" -> 2, ..., "Dec" -> 12
+        # So there is no need to use month_val_code_mapper to convert them to integer codes
 
-        # Check against zone maps to quickly eliminate chunks
+        # Iterate each chunk
+        # For each chunk, we use the zone map to quickly check if this chunk can satisfy the month condition for this query. 
+        # If not, we skip this chunk entirely without checking row by row.
+        # Else, there may be valid rows in this chunk for this query, we need to check row by row for this chunk to see which rows are valid and add them to the queue for this query.
         for chunk_idx, (chunk_min_month, chunk_max_month) in enumerate(month_zone_maps):
 
-            if chunk_max_month < target_start_month or chunk_min_month > target_end_month:
-                # This chunk cannot satisfy the month condition, skip it
-                continue
+            # target_start_month may not necessarily be smaller than target_end_month because the query may span across years (e.g. start month = Nov, end month = Feb)
+            # We have the following cases:
+            #   1) if target_start_month <= target_end_month, then we skip the chunk if 
+            #       chunk_max_month < target_start_month OR chunk_min_month > target_end_month
+            #
+            #   2) if target_start_month > target_end_month, then we skip the chunk if 
+            #       target_end_month < chunk_min_month AND chunk_max_month < target_start_month
+
+            if target_start_month <= target_end_month:
+                if chunk_max_month < target_start_month or chunk_min_month > target_end_month:
+                    # This chunk cannot satisfy the month condition for this query, skip it
+                    continue
+            else:
+                if target_end_month < chunk_min_month and chunk_max_month < target_start_month:
+                    # This chunk cannot satisfy the month condition for this query, skip it
+                    continue
 
             # If we reach here, this chunk may have valid rows for this query, we need to check row by row
             start_row_idx           : int = chunk_idx * CHUNK_SIZE
@@ -98,12 +155,21 @@ def run_queries(db, target_start_year, target_start_month, target_town_names, ma
     
             for row_idx in range(start_row_idx, end_row_idx_exclusive):
                 month_code = month_col[row_idx]
-                if target_start_month <= month_code <= target_end_month:
-                    valid_rows[query_idx].append(row_idx)
+                # if target_start_month <= target_end_month, we check if month_code is between target_start_month and target_end_month
+                if target_start_month <= target_end_month:
+                    if target_start_month <= month_code <= target_end_month:
+                        valid_rows[query_idx].append(row_idx)  # This row satisfies the month condition for this query, add it to the queue for this query
+                else:
+                    # if target_start_month > target_end_month, we check if month_code is greater than or equal to target_start_month OR month_code is less than or equal to target_end_month
+                    if month_code >= target_start_month or month_code <= target_end_month:
+                        valid_rows[query_idx].append(row_idx)  # This row satisfies the month condition for this query, add it to the queue for this query
     
-    print (f"After scanning month column, valid rows for each query: ")
+    logger.debug("After scanning month column, valid rows for each query:")
     for query_idx in range(num_queries):
-        print (f"   Query {query_idx + 1}: Start Month={queries[0][query_idx][0]}, End Month={queries[0][query_idx][1]} -> Number of Matching Rows: {len(valid_rows[query_idx])}")
+        logger.debug(f"   Query {query_idx + 1}: Start Month={queries[0][query_idx][0]}, End Month={queries[0][query_idx][1]} -> Number of Matching Rows: {len(valid_rows[query_idx])}")
+
+    total_after_month = sum(len(rows) for rows in valid_rows)
+    logger.info(f"Month scan complete. Total candidate rows across queries: {total_after_month}")
 
     # -------------------------------------------
     # 2. Scan year column
@@ -118,43 +184,34 @@ def run_queries(db, target_start_year, target_start_month, target_town_names, ma
         start_year_code = year_val_code_mapper[target_start_year]
         end_year_code   = year_val_code_mapper[target_end_year]
 
-        # Check against zone maps to quickly eliminate chunks
-        # We skip this chunk if 
-        #   1) it does not contain any valid rows for this query (from month scan), or 
-        #   2) it cannot satisfy the year condition based on the zone map
-        for chunk_idx, (chunk_min_month, chunk_max_month) in enumerate(year_zone_maps):
+        # We iterate each valid row index from the month scan for this query, 
+        # check if the year of this row satisfies the year condition for this query, if not, we remove this row index from the queue for this query
+        temp_queue = deque()  # Temporary queue to hold valid rows for this query after year scan
 
-            # Skip this chunk if it does not contain the valid rows (from month scan) for this query
-            start_row_idx           : int = chunk_idx * CHUNK_SIZE
-            end_row_idx_exclusive   : int = min((chunk_idx + 1) * CHUNK_SIZE, db.row_count)
+        while valid_rows[query_idx]:  # While there are still rows in the queue for this query
 
-            if not any (start_row_idx <= row_idx < end_row_idx_exclusive for row_idx in valid_rows[query_idx]):
-                # No valid rows for this query in this chunk, skip it
-                continue
+            row_idx = valid_rows[query_idx].popleft()  # Pop a row index from the queue
+            year_code = year_col[row_idx]
 
-            if chunk_max_month < start_year_code or chunk_min_month > end_year_code:
-                # This chunk cannot satisfy the year condition, skip it
-                continue
-        
-            # If we reach here, this chunk may have valid rows for this query, we need to check row by row
-            temp_queue = deque()  # Temporary queue to hold valid rows for this query after year scan
+            if start_year_code <= year_code <= end_year_code:
+                # Unlike month, start_year_code is always smaller than or equal to end_year_code 
+                # This row is still valid for this query, keep it in temp_queue
+                temp_queue.append(row_idx)
+            else:
+                # This row does not satisfy the year condition, do nothing (i.e., don't add it to temp_queue)
+                pass
 
-            while valid_rows[query_idx]:  # While there are still rows in the queue for this query
-                row_idx = valid_rows[query_idx].popleft()  # Pop a row index from the queue
-                year_code = year_col[row_idx]
-                if start_year_code <= year_code <= end_year_code:
-                    # This row is still valid for this query, keep it in temp_queue
-                    temp_queue.append(row_idx)
-                    continue
+        # Update valid_rows[query_idx] with the rows that are still valid after year scan
+        valid_rows[query_idx] = temp_queue
 
-                else:
-                    # This row does not satisfy the year condition, remove it from valid rows for this query
-                    pass  # Do nothing, since we're using temp_queue to hold valid rows
 
-            # Update valid_rows[query_idx] with the rows that are still valid after year scan
-            valid_rows[query_idx] = temp_queue
+    logger.debug("After scanning year column, valid rows for each query:")
+    for query_idx in range(len(valid_rows)):
+        logger.debug(f"   Query {query_idx + 1}: Start Year={queries[1][query_idx][0]}, End Year={queries[1][query_idx][1]} -> Number of Matching Rows: {len(valid_rows[query_idx])}")
 
-    print (f"After scanning year column, valid rows for each query: {[len(rows) for rows in valid_rows]}")
+    total_after_year = sum(len(rows) for rows in valid_rows)
+    logger.info(f"Year scan complete. Total candidate rows across queries: {total_after_year}")
+
 
     # -------------------------------------------
     # 3. Scan Town column
@@ -166,43 +223,34 @@ def run_queries(db, target_start_year, target_start_month, target_town_names, ma
 
     town_codes: list[int] = [town_val_code_mapper[town] for town in target_town_names] 
 
-    for query_idx in range(len(queries[0])):  # Assuming all inner lists in queries have the same length
+    for query_idx in range(num_queries): 
 
-        # Check against zone maps to quickly eliminate chunks
-        # We skip this chunk if 
-        #   1) it does not contain any valid rows for this query (from previous scans), or 
-        #   2) it cannot satisfy the town condition based on the zone map
-        for chunk_idx, chunk_towns in enumerate(town_zone_maps):
+        # We iterate each valid row index from the year scan for this query, 
+        # check if the town of this row is in the target towns for this query, if not, we remove this row index from the queue for this query
+        temp_queue = deque()  # Temporary queue to hold valid rows for this query after town scan
 
-            # Skip this chunk if it does not contain the valid rows (from previous scans) for this query
-            start_row_idx           : int = chunk_idx * CHUNK_SIZE
-            end_row_idx_exclusive   : int = min((chunk_idx + 1) * CHUNK_SIZE, db.row_count)
+        while valid_rows[query_idx]:  # While there are still rows in the queue for this query
 
-            if not any (start_row_idx <= row_idx < end_row_idx_exclusive for row_idx in valid_rows[query_idx]):
-                # No valid rows for this query in this chunk, skip it
-                continue
+            row_idx = valid_rows[query_idx].popleft()  # Pop a row index from the queue
+            town_code = town_col[row_idx]
 
-            if not any (town_code in town_codes for town_code in chunk_towns):
-                # This chunk does not contain any of the target towns, skip it
-                continue
-        
-            # If we reach here, this chunk may have valid rows for this query, we need to check row by row
-            temp_queue = deque()  # Temporary queue to hold valid rows for this query after town scan
+            if town_code in town_codes:
+                # This row is still valid for this query, keep it in temp_queue
+                temp_queue.append(row_idx)
+            else:
+                # This row does not satisfy the town condition, do nothing (i.e., don't add it to temp_queue)
+                pass
 
-            while valid_rows[query_idx]:  # While there are still rows in the queue for this query
-                row_idx = valid_rows[query_idx].popleft()  # Pop a row index from the queue
-                town_code = town_col[row_idx]
-                if town_code in town_codes:
-                    # This row is still valid for this query, keep it in temp_queue
-                    temp_queue.append(row_idx)
-                else:
-                    # This row does not satisfy the town condition, do nothing (i.e., don't add it to temp_queue)
-                    pass
+        # Update valid_rows[query_idx] with the rows that are still valid after town scan
+        valid_rows[query_idx] = temp_queue
 
-            # Update valid_rows[query_idx] with the rows that are still valid after town scan
-            valid_rows[query_idx] = temp_queue
+    logger.debug("After scanning town column, valid rows for each query:")
+    for query_idx in range(num_queries):
+        logger.debug(f"   Query {query_idx + 1}: Towns={queries[0][query_idx][0]} -> Number of Matching Rows: {len(valid_rows[query_idx])}")
 
-    print (f"After scanning town column, valid rows for each query: {[len(rows) for rows in valid_rows]}")
+    total_after_town = sum(len(rows) for rows in valid_rows)
+    logger.info(f"Town scan complete. Total candidate rows across queries: {total_after_town}")
+
 
     # -------------------------------------------
     # 4. Scan Floor Area
@@ -241,44 +289,30 @@ def run_queries(db, target_start_year, target_start_month, target_town_names, ma
 
             min_floor_area_code = (next_smaller_code + next_larger_code) / 2
 
-        # Check against zone maps to quickly eliminate chunks
-        # We skip this chunk if 
-        #   1) it does not contain any valid rows for this query (from previous scans), or 
-        #   2) it cannot satisfy the floor area condition based on the zone map
-        for chunk_idx, (chunk_min_month, chunk_max_month) in enumerate(floor_area_zone_maps):
+        # We iterate each valid row index from the town scan for this query,
+        # check if the floor area of this row is greater than or equal to the target minimum floor area for this query, if not, we remove this row index from the queue for this query
+        temp_queue = deque()  # Temporary queue to hold valid rows for this query after floor
+        while valid_rows[query_idx]:  # While there are still rows in the queue for this query
 
-            # Skip this chunk if it does not contain the valid rows (from previous scans) for this query
-            start_row_idx           : int = chunk_idx * CHUNK_SIZE
-            end_row_idx_exclusive   : int = min((chunk_idx + 1) * CHUNK_SIZE, db.row_count)
+            row_idx = valid_rows[query_idx].popleft()  # Pop a row index from the queue
+            floor_area_code = floor_area_col[row_idx]
 
-            if not any (start_row_idx <= row_idx < end_row_idx_exclusive for row_idx in valid_rows[query_idx]):
-                # No valid rows for this query in this chunk, skip it
-                continue
+            if floor_area_code >= min_floor_area_code:
+                # This row is still valid for this query, keep it in temp_queue
+                temp_queue.append(row_idx)
+            else:
+                # This row does not satisfy the floor area condition, do nothing (i.e., don't add it to temp_queue)
+                pass
 
-            if chunk_max_month < min_floor_area_code:
-                # This chunk cannot satisfy the floor area condition, skip it
-                continue
-        
-            # If we reach here, this chunk may have valid rows for this query, we need to check row by row
-            temp_queue = deque()  # Temporary queue to hold valid rows for this query after floor area scan
-
-            while valid_rows[query_idx]:  # While there are still rows in the queue for this query
-                row_idx = valid_rows[query_idx].popleft()  # Pop a row index from the queue
-                floor_area_code = floor_area_col[row_idx]
-                if floor_area_code >= min_floor_area_code:
-                    # This row is still valid for this query, keep it in temp_queue
-                    temp_queue.append(row_idx)
-                else:
-                    # This row does not satisfy the floor area condition, remove it from valid rows for this query
-                    pass  # Do nothing, since we're using temp_queue to hold valid rows
-
-            # Update valid_rows[query_idx] with the rows that are still valid after floor area scan
-            valid_rows[query_idx] = temp_queue
-
+        # Update valid_rows[query_idx] with the rows that are still valid after floor area scan
+        valid_rows[query_idx] = temp_queue
     
-    print (f"Query Results for Matriculation Number {matric_num}:")
+    logger.info(f"Floor area scan complete. Writing detailed query results for matriculation number {matric_num} to log file.")
+    logger.debug(f"Query Results for Matriculation Number {matric_num}:")
     for query_idx in range(len(queries[0])):  # Assuming all inner lists in queries have the same length
-        print (f"Query {query_idx + 1}: Start Month={queries[0][query_idx][0]}, End Month={queries[0][query_idx][1]}, Start Year={queries[1][query_idx][0]}, End Year={queries[1][query_idx][1]}, Min Floor Area={queries[2][query_idx]} -> Number of Matching Rows: {len(valid_rows[query_idx])}")
+        logger.debug(f"Query {query_idx + 1}: Start Month={queries[0][query_idx][0]}, End Month={queries[0][query_idx][1]}, Start Year={queries[1][query_idx][0]}, End Year={queries[1][query_idx][1]}, Min Floor Area={queries[2][query_idx]} -> Number of Matching Rows: {len(valid_rows[query_idx])}")
+
+    logger.info("All query scans completed.")
 
 
 
@@ -287,24 +321,26 @@ def run_queries(db, target_start_year, target_start_month, target_town_names, ma
 # ---------------------------------------------------------
 
 if __name__ == "__main__":
+    logger = configure_logging()
     db = ColumnStoreDB()
-    print ("Database Initialized.")
-    print ("Loading CSV into Column Store Database...")
+    logger.info("Database initialized.")
+    logger.info("Loading CSV into Column Store Database...")
 
     if os.path.exists(INPUT_FILE):
         db.load_csv(INPUT_FILE)
 
-        print ("Database loaded.")
+        logger.info("Database loaded.")
         matriculation_number = input("Enter your matriculation number (e.g. A0123456B): ")
         (start_year, start_month, town_names) = parse_matriculation(matriculation_number)
 
-        print (f"Parsed Matriculation: Start Year={start_year}, Start Month={start_month}, Towns={town_names}")
-        print ("Running Queries for x in [1, 8], y in [80, 150]...")
+        logger.info(f"Parsed Matriculation: Start Year={start_year}, Start Month={start_month}, Towns={town_names}")
+        logger.info("Running queries for x in [1, 8], y in [80, 150]...")
 
-        run_queries(db, start_year, start_month, town_names, matriculation_number)
+        run_queries(db, start_year, start_month, town_names, matriculation_number, logger)
         
         del db
         gc.collect()
+        logger.info("Run completed and memory cleaned up.")
         
     else:
-        print(f"Error: {INPUT_FILE} not found.")
+        logger.error(f"{INPUT_FILE} not found.")

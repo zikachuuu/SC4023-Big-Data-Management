@@ -5,8 +5,11 @@ import os
 import gc
 import pandas as pd
 import math
+import logging
 
 from constants import INPUT_FILE, CHUNK_SIZE, TOWN_MAP_DIGIT, MONTH_MAP_DIGIT
+
+logger = logging.getLogger("column_store_db")
 
 class ColumnStoreDB:
     def __init__(self):
@@ -173,5 +176,5 @@ class ColumnStoreDB:
         # Log the database state after loading
         self._log_database_state()
 
-        print(f"Loaded CSV with {self.row_count} rows and {self.col_count} columns into Column Store Database.")
+        logger.info(f"Loaded CSV with {self.row_count} rows and {self.col_count} columns into Column Store Database.")
 
