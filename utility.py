@@ -1,17 +1,16 @@
 import logging
 import os
-from datetime import datetime
+
+from constants import LOG_DIR
 
 
 def configure_logging(matriculation_number: str) -> logging.Logger:
     """
     Only log INFO and above to console, but log DEBUG and above to file.
     """
-    logs_dir = os.path.join(os.path.dirname(__file__), "Logs")
-    os.makedirs(logs_dir, exist_ok=True)
+    os.makedirs(LOG_DIR, exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = os.path.join(logs_dir, f"run_{matriculation_number}_{timestamp}.log")
+    log_path = os.path.join(LOG_DIR, f"run_{matriculation_number}.log")
 
     logger = logging.getLogger("column_store_db")
     logger.setLevel(logging.DEBUG)

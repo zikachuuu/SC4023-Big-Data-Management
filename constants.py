@@ -4,6 +4,12 @@ import os
 # Currently set to be in the same directory as this constants.py file
 INPUT_FILE = os.path.join(os.path.dirname(__file__), 'ResalePricesSingapore.csv')
 
+# Directory to store log files
+LOG_DIR = os.path.join(os.path.dirname(__file__), 'Logs')
+
+# Directory to store csv output files
+RESULTS_DIR = os.path.join(os.path.dirname(__file__), 'Results')
+
 # Size for Zone Map chunks
 # We compute the max and min of selected columns for each chunk and store them in the Zone Map
 CHUNK_SIZE = 1000  

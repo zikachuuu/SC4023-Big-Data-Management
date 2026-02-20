@@ -5,9 +5,8 @@ import gc
 import json
 import math
 import logging
-from datetime import datetime
 
-from constants import INPUT_FILE, CHUNK_SIZE, TOWN_MAP_DIGIT
+from constants import INPUT_FILE, RESULTS_DIR, CHUNK_SIZE, TOWN_MAP_DIGIT
 from columnStoreDB import ColumnStoreDB
 from collections import deque
 from utility import configure_logging
@@ -39,7 +38,6 @@ def parse_matriculation(matriculation_num):
     town_names = [TOWN_MAP_DIGIT[d] for d in unique_digits]
     
     return target_year, start_month, town_names
-
 
 
 def run_queries(
@@ -173,7 +171,6 @@ def run_queries(
 
             if target_start_year_code <= year_code <= target_end_year_code:
                 # Unlike month, start_year_code is always smaller than or equal to end_year_code 
-                # This row is still valid for this query, keep it in temp_queue
 
                 # If year_code = target_start_year_code, we need to check for this row
                 # whether the month is greater than or equal to target_start_month for this query, if not, this row is not valid for this query
@@ -349,9 +346,8 @@ def run_queries(
     logger.info("Selection of rows with least psm completed. Writing final results to CSV file...")
 
     # Save to ScanResult_<matriculation_number>.csv in Results folder
-    results_dir = os.path.join(os.path.dirname(__file__), "Results")
-    os.makedirs(results_dir, exist_ok=True)
-    results_file_path = os.path.join(results_dir, f"ScanResult_{matric_num}.csv")
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    results_file_path = os.path.join(RESULTS_DIR, f"ScanResult_{matric_num}.csv")
 
     with open(results_file_path, 'w', newline='') as csvfile:
         csv_writer = csv.writer(csvfile)
@@ -380,7 +376,7 @@ def run_queries(
                 flat_model          : str   = flat_model_code_val_mapper[flat_model_col[min_psm_row_idx]]
                 lease_commence_date : int   = lease_commence_date_code_val_mapper[lease_commence_date_col[min_psm_row_idx]]
 
-                csv_writer.writerow([f"({x},{y})", year, month, town, block, floor_area, flat_model, lease_commence_date, min_psm])
+                csv_writer.writerow([f"({x},{y})", year, month, town, block, floor_area, flat_model, lease_commence_date, int(min_psm)])
             else:
                 csv_writer.writerow([f"({x},{y})", "No Result", "No Result", "No Result", "No Result", "No Result", "No Result", "No Result", "No Result"])
 

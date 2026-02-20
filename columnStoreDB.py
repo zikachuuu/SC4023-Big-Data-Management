@@ -7,7 +7,7 @@ import pandas as pd
 import math
 import logging
 
-from constants import INPUT_FILE, CHUNK_SIZE, TOWN_MAP_DIGIT, MONTH_MAP_DIGIT
+from constants import CHUNK_SIZE, MONTH_MAP_DIGIT
 
 logger = logging.getLogger("column_store_db")
 
