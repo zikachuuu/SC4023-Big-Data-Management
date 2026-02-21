@@ -18,7 +18,7 @@ def configure_logging(matriculation_number: str) -> logging.Logger:
 
     logger.handlers.clear()
 
-    file_handler = logging.FileHandler(log_path)
+    file_handler = logging.FileHandler(log_path, mode='w')  # 'w' to overwrite the log file for each run
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
 
@@ -33,24 +33,61 @@ def configure_logging(matriculation_number: str) -> logging.Logger:
     return logger
 
 
-def convert_str_date_to_code(date_str: str) -> int:
+def convert_month_str_to_code(month_str: str) -> int:
     """
-    Convert a date string in the format "MMM-YY" (e.g. "Jan-20") to an integer representation.
+    Convert a month string in the format "MMM-YY" (e.g. "Jan-20") to an integer representation.
     We can use this integer representation for efficient storage and comparison in the column store database.
 
     The conversion is done by encoding the month and year into a single integer using the formula:
-        encoded_date = int ((2 digit year) + (2 digit month)), where + is string concatenation, not addition.
+        encoded_month = int ((2 digit year) + (2 digit month)), where + is string concatenation, not addition.
     For example:
-        "Jan-20" -> month = 1, year = 20 -> encoded_date = 2001
-        "Feb-20" -> month = 2, year = 20 -> encoded_date = 2002
+        "Jan-20" -> month = 1, year = 20 -> encoded_month = 2001
+        "Feb-20" -> month = 2, year = 20 -> encoded_month = 2002
     """
-    month_str, year_str = date_str.split('-')
+    month_str, year_str = month_str.split('-')
     month = MONTH_MAP_DIGIT[month_str]  # Convert month name to its corresponding digit
     year = int(year_str)
 
-    # Encode the date as an integer using string concatenation
-    encoded_date = int(f"{year:02d}{month:02d}")  # Format year and month as 2-digit numbers and concatenate them
-    return encoded_date
+    # Encode the month as an integer using string concatenation
+    encoded_month = int(f"{year:02d}{month:02d}")  # Format year and month as 2-digit numbers and concatenate them
+    return encoded_month
+
+
+def convert_code_to_month_str(code: int) -> str:
+    """
+    Convert an integer code back to a month string in the format "MMM-YY".
+    This is the inverse of the convert_month_str_to_code function.
+
+    The conversion is done by decoding the integer code back into month and year using string slicing.
+    For example:
+        2001 -> year = 20, month = 1 -> "Jan-20"
+        2002 -> year = 20, month = 2 -> "Feb-20"
+    """
+    code_str = f"{code:04d}"  # Ensure the code is treated as a 4-digit number with leading zeros if necessary
+    year_str = code_str[:2]   # First two digits represent the year
+    month_str = code_str[2:]  # Last two digits represent the month
+
+    # Convert month digit back to month name
+    month_digit = int(month_str)
+    month_name = next(key for key, value in MONTH_MAP_DIGIT.items() if value == month_digit)
+
+    return f"{month_name}-{year_str}"
+
+
+def convert_month_year_to_code(month: int, year: int) -> int:
+    """
+    Convert a month and year to the same integer code format as convert_month_str_to_code.
+    This is useful for converting the target month and year from the query into the same format as the encoded month column in the database, so that we can perform comparisons using the encoded integer values.
+
+    The conversion is done by encoding the month and year into a single integer using the formula:
+        encoded_month = int ((2 digit year) + (2 digit month)), where + is string concatenation, not addition.
+    For example:
+        month = 1, year = 20 -> encoded_month = 2001
+        month = 2, year = 20 -> encoded_month = 2002
+    """
+    encoded_month = int(f"{year:02d}{month:02d}")  # Format year and month as 2-digit numbers and concatenate them
+    return encoded_month
+
 
 def convert_floor_area_to_code (floor_area: float) -> int:
     """

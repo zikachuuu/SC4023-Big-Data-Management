@@ -8,7 +8,7 @@ import math
 import logging
 
 from constants import CHUNK_SIZE, MONTH_MAP_DIGIT
-from utility import convert_str_date_to_code, convert_floor_area_to_code
+from utility import convert_month_str_to_code, convert_floor_area_to_code
 
 logger = logging.getLogger("column_store_db")
 
@@ -42,7 +42,7 @@ class ColumnStoreDB:
         # Outer list: Index corresponds to column index
         # Middle list: Index corresponds to chunk index
         # Inner list: Stores the metadata for that chunk. The content depends on the column:
-        #   column "month"          -> [earliest date, latest date] for each chunk
+        #   column "month"          -> [earliest month, latest month] for each chunk
         #   column "town"           -> [towns that appeared in the chunk]
         #   column "floor_area"     -> [min floor area, max floor area] for each chunk
         #   Other columns           -> No zone map (empty list)
@@ -128,17 +128,17 @@ class ColumnStoreDB:
 
             # Encoding is done differently for different columns
 
-            # For "month" column, we convert the date string "Mmm-YY" (eg "Jan-20") to an integer representation (eg 2001) using the convert_str_date_to_int function.
-            #   This allows us to preserve the chronological order of the dates in the integer codes, which is important for range queries on the "month" column.
+            # For "month" column, we convert the month string "Mmm-YY" (eg "Jan-20") to an integer representation (eg 2001) using the convert_month_str_to_code function.
+            #   This allows us to preserve the chronological order of the months in the integer codes, which is important for range queries on the "month" column.
             #   Also, it only require 2 bytes (or more specifically, 12 bits i.e. 0 to 4095) to store the encoded month values
             if col_name == "month":
-                self.val_code_mapper[col_idx] = {val: convert_str_date_to_code(val) for val in unique_vals}
-                self.code_val_mapper[col_idx] = {convert_str_date_to_code(val): val for val in unique_vals}
+                self.val_code_mapper[col_idx] = {val: convert_month_str_to_code(val) for val in unique_vals}
+                self.code_val_mapper[col_idx] = {convert_month_str_to_code(val): val for val in unique_vals}
 
-            # For "floor_area" column, we keep the original numeric values but convert the floats to integers by multiplying by 10
+            # For "floor_area_sqm" column, we keep the original numeric values but convert the floats to integers by multiplying by 10
             #   This is because not all possible floor area values appear in the dataset, and if our query involves a floor area value that does not appear in the dataset
             #   We can still convert it to the corresponding integer code and perform comparisons using the encoded integer values.
-            elif col_name == "floor_area":
+            elif col_name == "floor_area_sqm":
                 self.val_code_mapper[col_idx] = {val: convert_floor_area_to_code(val) for val in unique_vals}
                 self.code_val_mapper[col_idx] = {convert_floor_area_to_code(val): val for val in unique_vals}
 
