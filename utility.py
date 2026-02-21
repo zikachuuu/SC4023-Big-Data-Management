@@ -1,7 +1,7 @@
 import logging
 import os
 
-from constants import LOG_DIR
+from constants import LOG_DIR, MONTH_MAP_DIGIT
 
 
 def configure_logging(matriculation_number: str) -> logging.Logger:
@@ -31,3 +31,33 @@ def configure_logging(matriculation_number: str) -> logging.Logger:
 
     logger.info(f"Logging initialized. File: {log_path}")
     return logger
+
+
+def convert_str_date_to_code(date_str: str) -> int:
+    """
+    Convert a date string in the format "MMM-YY" (e.g. "Jan-20") to an integer representation.
+    We can use this integer representation for efficient storage and comparison in the column store database.
+
+    The conversion is done by encoding the month and year into a single integer using the formula:
+        encoded_date = int ((2 digit year) + (2 digit month)), where + is string concatenation, not addition.
+    For example:
+        "Jan-20" -> month = 1, year = 20 -> encoded_date = 2001
+        "Feb-20" -> month = 2, year = 20 -> encoded_date = 2002
+    """
+    month_str, year_str = date_str.split('-')
+    month = MONTH_MAP_DIGIT[month_str]  # Convert month name to its corresponding digit
+    year = int(year_str)
+
+    # Encode the date as an integer using string concatenation
+    encoded_date = int(f"{year:02d}{month:02d}")  # Format year and month as 2-digit numbers and concatenate them
+    return encoded_date
+
+def convert_floor_area_to_code (floor_area: float) -> int:
+    """
+    Convert the floor area from a float to an integer code by multiplying by 10.
+    This allows us to preserve one decimal place of precision while storing the value as an integer.
+    For example:
+        45.5 sqm -> 455
+        30.0 sqm -> 300
+    """
+    return int(floor_area * 10)

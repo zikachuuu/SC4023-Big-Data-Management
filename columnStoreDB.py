@@ -8,6 +8,7 @@ import math
 import logging
 
 from constants import CHUNK_SIZE, MONTH_MAP_DIGIT
+from utility import convert_str_date_to_code, convert_floor_area_to_code
 
 logger = logging.getLogger("column_store_db")
 
@@ -17,7 +18,7 @@ class ColumnStoreDB:
         # Dictionary to map column names to their column indexes (eg. "month" -> 0, "town" -> 1, etc.)
         self.col_names: dict[str, int] = {}
 
-        # Compression: For each column, we mapped the increasingly sorted unique values (strings or int) to integer codes starting from 0.
+        # Compression: For each column, we mapped the increasingly sorted unique values (strings or int) to integer codes.
         # This saves space and allows for faster comparisons.
         # To access the column, use the column index from col_names
         self.val_code_mapper: list[dict[str | int, int]] = [] 
@@ -41,8 +42,7 @@ class ColumnStoreDB:
         # Outer list: Index corresponds to column index
         # Middle list: Index corresponds to chunk index
         # Inner list: Stores the metadata for that chunk. The content depends on the column:
-        #   column "month"          -> [earliest month, latest month] for each chunk
-        #   column "year"           -> [earliest year, latest year] for each chunk
+        #   column "month"          -> [earliest date, latest date] for each chunk
         #   column "town"           -> [towns that appeared in the chunk]
         #   column "floor_area"     -> [min floor area, max floor area] for each chunk
         #   Other columns           -> No zone map (empty list)
@@ -111,14 +111,7 @@ class ColumnStoreDB:
     def load_csv(self, filepath):
         # Load the raw data
         df_temp: pd.DataFrame   = pd.read_csv(filepath)
-        
-        # Split the "month" column into "month" and "year", and insert the "year" column right after "month"
-        month_split = df_temp["month"].str.split('-', expand=True)
-        df_temp["month"] = month_split[0]  # Keep month name (Jan, Feb, etc.)
-
-        month_idx = df_temp.columns.get_loc("month") # Insert year column right after month
-        df_temp.insert(month_idx + 1, "year", month_split[1].astype(int))  # Convert year to int
-        
+                
         self.row_count          = len(df_temp)
         self.col_count          = len(df_temp.columns)
         self.col_names          = {col_name: i for i, col_name in enumerate(df_temp.columns)}
@@ -133,19 +126,29 @@ class ColumnStoreDB:
             
             unique_vals: np.ndarray = df_temp[col_name].unique()
 
-            if col_name == "month":
-                # Use Custom mapping for Month to preserve chronological order (Jan < Feb < ... < Dec)
-                self.val_code_mapper[col_idx] = {key: val for key, val in MONTH_MAP_DIGIT.items()}
+            # Encoding is done differently for different columns
 
-                # Reverse mapping for decoding integer codes back to original month names
-                self.code_val_mapper[col_idx] = {val: key for key, val in MONTH_MAP_DIGIT.items()}
+            # For "month" column, we convert the date string "Mmm-YY" (eg "Jan-20") to an integer representation (eg 2001) using the convert_str_date_to_int function.
+            #   This allows us to preserve the chronological order of the dates in the integer codes, which is important for range queries on the "month" column.
+            #   Also, it only require 2 bytes (or more specifically, 12 bits i.e. 0 to 4095) to store the encoded month values
+            if col_name == "month":
+                self.val_code_mapper[col_idx] = {val: convert_str_date_to_code(val) for val in unique_vals}
+                self.code_val_mapper[col_idx] = {convert_str_date_to_code(val): val for val in unique_vals}
+
+            # For "floor_area" column, we keep the original numeric values but convert the floats to integers by multiplying by 10
+            #   This is because not all possible floor area values appear in the dataset, and if our query involves a floor area value that does not appear in the dataset
+            #   We can still convert it to the corresponding integer code and perform comparisons using the encoded integer values.
+            elif col_name == "floor_area":
+                self.val_code_mapper[col_idx] = {val: convert_floor_area_to_code(val) for val in unique_vals}
+                self.code_val_mapper[col_idx] = {convert_floor_area_to_code(val): val for val in unique_vals}
+
+            # For remaining columns, we simply sort the unique values and assign integer codes (starting from 0) based on the sorted order.
+            # This includes columns like "resale_price", which faces similiar issues as "floor_area" but it is not involved in querying or filtering
             else:
                 # Standard sorting (Lexicographical for strings, Numeric for ints)
                 sorted_unique_vals = np.sort(unique_vals)
-                # Stores the Original Value -> Integer Code mapping for this column
-                self.val_code_mapper[col_idx] = {val: idx for idx, val in enumerate(sorted_unique_vals)}
 
-                # Stores the Integer Code -> Original Value mapping for this column
+                self.val_code_mapper[col_idx] = {val: idx for idx, val in enumerate(sorted_unique_vals)}
                 self.code_val_mapper[col_idx] = {idx: val for idx, val in enumerate(sorted_unique_vals)}
 
             # Map the original column to integers
@@ -159,7 +162,7 @@ class ColumnStoreDB:
             zone_maps_col = []
 
             # Determine if this column needs a zone map
-            if col_name in ["month", "year", "floor_area", "resale_price"]:
+            if col_name in ["month", "floor_area", "resale_price"]:
                 # Min/Max Zone Map
                 for i in range(self.num_chunks):
                     start_idx   : int           = i * CHUNK_SIZE
