@@ -71,7 +71,7 @@ def run_queries(
             target_start_month      : int = target_start_month_code % 100   # Extract the month part from the target_start_month_code (e.g. 2001 -> 1)
 
             target_end_year         : int = target_start_year + (target_start_month + x - 1) // 12
-            target_end_month        : int = (target_start_month + x - 1) % 12 + 1  
+            target_end_month        : int = (target_start_month + x - 1) % 12 
             target_end_month_code   : int = convert_month_year_to_code(target_end_month, target_end_year)
             target_min_floor_area   : int = y
 

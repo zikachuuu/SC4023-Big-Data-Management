@@ -4,6 +4,7 @@
 - **2026-02-15:** Implemented the column store database class
 - **2026-02-20:** Implemented querying
 - **2026-02-21:** New storage logic for `month` and `floor_area` column. Corresponding querying logic updated.
+- **2026-03-20:** Bug fixes regarding `target_end_month`. Validated correctness of query with PostgreSQL.
 
 ## To Start
 Simply install the necessary dependencies from `requirements.txt` and run `main.py`. You will be prompted to enter a matriculation number, which will be parsed to retrieve the correct queries. A copy of the database (since its non persistent) as well as the logs (`run_<matriculation_num>.log`) will be saved in `Logs` folder. The output `ScanResult_<matriculation_num>.csv` will be saved in `Results` folder.
@@ -79,8 +80,6 @@ We have found the queue of valid row indices for each query, and for each query,
 
 
 ## TODO
-
-- Load the csv data to an actual database to validate our results.
 
 - Only the `month` column use `zone_map` as it is the first column to be scanned. For subsequent columns, it is no longer efficient to use zone map. We should let the user to choose the order of the four columns to parse so that we can compare the performance.
 
