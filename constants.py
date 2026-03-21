@@ -1,5 +1,8 @@
 import os
 
+# Maximum allowed price per square meter
+MAX_PSM = 4725
+
 # Location of the input CSV file
 # Currently set to be in the same directory as this constants.py file
 INPUT_FILE = os.path.join(os.path.dirname(__file__), 'ResalePricesSingapore.csv')

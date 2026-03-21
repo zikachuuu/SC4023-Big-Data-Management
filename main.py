@@ -7,7 +7,7 @@ import math
 import logging
 import time
 
-from constants import INPUT_FILE, RESULTS_DIR, CHUNK_SIZE, TOWN_MAP_DIGIT
+from constants import INPUT_FILE, RESULTS_DIR, CHUNK_SIZE, TOWN_MAP_DIGIT, MAX_PSM
 from columnStoreDB import ColumnStoreDB
 from collections import deque
 from utility import configure_logging, convert_month_year_to_code, convert_code_to_month_str, convert_floor_area_to_code
@@ -270,11 +270,11 @@ def run_queries(
             floor_area      : float = floor_area_code_val_mapper[floor_area_col[row_idx]] 
             psm = resale_price / floor_area
 
-            if psm < min_psm:
+            if psm <= MAX_PSM and psm < min_psm:
                 min_psm = psm
                 min_psm_row_idx = row_idx
 
-        if min_psm_row_idx is not None:
+        if min_psm_row_idx is not None and min_psm <= MAX_PSM:
             min_psm_results.append((min_psm_row_idx, min_psm))
         else:
             min_psm_results.append((None, None))
