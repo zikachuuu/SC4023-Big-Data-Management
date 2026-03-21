@@ -278,7 +278,6 @@ def run_queries(
         min_psm_row_idx = None
 
         for row_idx in valid_rows[query_idx]:
-
             resale_price    : int   = resale_price_code_val_mapper[resale_price_col[row_idx]]  
             floor_area      : float = floor_area_code_val_mapper[floor_area_col[row_idx]] 
             psm = resale_price / floor_area
@@ -288,13 +287,12 @@ def run_queries(
                     min_psm = psm
                     min_psm_row_idx = row_idx
                 elif psm == min_psm:
-                    # Tiebreaker: if PSM is identical, we order by month, town, block
-                    curr_month = month_code_val_mapper[month_col[row_idx]]
-                    min_month = month_code_val_mapper[month_col[min_psm_row_idx]]
+                    curr_month_code = month_col[row_idx]
+                    min_month_code = month_col[min_psm_row_idx]
                     
-                    if curr_month < min_month:
+                    if curr_month_code < min_month_code:
                         min_psm_row_idx = row_idx
-                    elif curr_month == min_month:
+                    elif curr_month_code == min_month_code:
                         curr_town = town_code_val_mapper[town_col[row_idx]]
                         min_town = town_code_val_mapper[town_col[min_psm_row_idx]]
                         
