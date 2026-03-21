@@ -1,6 +1,7 @@
-
-
 import re
+import sqlite3
+import csv
+import os
 
 # Town digit mapping (from Table 1)
 TOWN_MAP_DIGIT = {
@@ -56,7 +57,15 @@ def generate_sql_query(start_year, start_month, x, y, towns):
           AND floor_area_sqm >= {y}
           AND resale_price / floor_area_sqm <= 4725
     )
-    ORDER BY month, town, block
+    ORDER BY 
+        SUBSTR(month, 5, 2), 
+        CASE SUBSTR(month, 1, 3) 
+            WHEN 'Jan' THEN '01' WHEN 'Feb' THEN '02' WHEN 'Mar' THEN '03' 
+            WHEN 'Apr' THEN '04' WHEN 'May' THEN '05' WHEN 'Jun' THEN '06' 
+            WHEN 'Jul' THEN '07' WHEN 'Aug' THEN '08' WHEN 'Sep' THEN '09' 
+            WHEN 'Oct' THEN '10' WHEN 'Nov' THEN '11' WHEN 'Dec' THEN '12' 
+        END,
+        town, block
     '''
     return sql
 
@@ -67,9 +76,6 @@ def extract_params_from_filename(filename):
         return None
     matric, x, y = m.group(1), int(m.group(2)), int(m.group(3))
     return matric, x, y
-import sqlite3
-import csv
-import os
 
 # Path to the directory containing ScanResult files
 directory = './Results/'

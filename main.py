@@ -259,6 +259,19 @@ def run_queries(
     resale_price_col            : np.ndarray        = db.columns[resale_price_col_idx]
     resale_price_zone_maps      : list[list[int]]   = db.zone_maps[resale_price_col_idx]
 
+    # Pre-fetch columns and mappers needed for tie-breaking
+    month_col_idx = db.col_names["month"]
+    month_code_val_mapper = db.code_val_mapper[month_col_idx]
+    month_col = db.columns[month_col_idx]
+    
+    town_col_idx = db.col_names["town"]
+    town_code_val_mapper = db.code_val_mapper[town_col_idx]
+    town_col = db.columns[town_col_idx]
+    
+    block_col_idx = db.col_names["block"]
+    block_code_val_mapper = db.code_val_mapper[block_col_idx]
+    block_col = db.columns[block_col_idx]
+
     for query_idx in range(num_queries):
         
         min_psm = math.inf
@@ -270,9 +283,29 @@ def run_queries(
             floor_area      : float = floor_area_code_val_mapper[floor_area_col[row_idx]] 
             psm = resale_price / floor_area
 
-            if psm <= MAX_PSM and psm < min_psm:
-                min_psm = psm
-                min_psm_row_idx = row_idx
+            if psm <= MAX_PSM:
+                if psm < min_psm:
+                    min_psm = psm
+                    min_psm_row_idx = row_idx
+                elif psm == min_psm:
+                    # Tiebreaker: if PSM is identical, we order by month, town, block
+                    curr_month = month_code_val_mapper[month_col[row_idx]]
+                    min_month = month_code_val_mapper[month_col[min_psm_row_idx]]
+                    
+                    if curr_month < min_month:
+                        min_psm_row_idx = row_idx
+                    elif curr_month == min_month:
+                        curr_town = town_code_val_mapper[town_col[row_idx]]
+                        min_town = town_code_val_mapper[town_col[min_psm_row_idx]]
+                        
+                        if curr_town < min_town:
+                            min_psm_row_idx = row_idx
+                        elif curr_town == min_town:
+                            curr_block = block_code_val_mapper[block_col[row_idx]]
+                            min_block = block_code_val_mapper[block_col[min_psm_row_idx]]
+                            
+                            if curr_block < min_block:
+                                min_psm_row_idx = row_idx
 
         if min_psm_row_idx is not None and min_psm <= MAX_PSM:
             min_psm_results.append((min_psm_row_idx, min_psm))

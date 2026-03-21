@@ -5,6 +5,7 @@
 - **2026-02-20:** Implemented querying
 - **2026-02-21:** New storage logic for `month` and `floor_area` column. Corresponding querying logic updated.
 - **2026-03-20:** Bug fixes regarding `target_end_month`. Validated correctness of query with PostgreSQL.
+- **2026-03-21:** Further bug fixes regarding `target_end_month`. Improved and generalised correctness query script with SQLite.
 
 ## To Start
 Simply install the necessary dependencies from `requirements.txt` and run `main.py`. You will be prompted to enter a matriculation number, which will be parsed to retrieve the correct queries. A copy of the database (since its non persistent) as well as the logs (`run_<matriculation_num>.log`) will be saved in `Logs` folder. The output `ScanResult_<matriculation_num>.csv` will be saved in `Results` folder.
@@ -17,9 +18,9 @@ The column store database is made up of the following data structures.
 
 - `val_code_mapper`: A list of dictionary for which, for each column, map each unqiue value (string or integer) to an integer code. The integer code preserves the ordering of the values.
 
-    - For `month` column, we converts each string value in the original csv (e.g. Jan-20, Dec-19) to a 4 digit code (e.g. 2001, 1912) using `convert_str_date_to_code` in `utility.py`. This integer code preserves the chronological order of the dates (e.g. 1912 < 2001). Also, it only require 2 bytes (or more specifically, 12 bits i.e. 0 to 4095) to store the encoded month values.
+    - For `month` column, we converted each string value in the original csv (e.g. Jan-20, Dec-19) to a 4 digit code (e.g. 2001, 1912) using `convert_str_date_to_code` in `utility.py`. This integer code preserves the chronological order of the dates (e.g. 1912 < 2001). Also, it only require 2 bytes (or more specifically, 12 bits i.e. 0 to 4095) to store the encoded month values.
 
-    - For `floor_area_sqm` column, we converts each float value of 1 d.p. in the original csv to a integer code by multiplying by 10, using `convert_floor_area_to_code` in `utility.py`. We cannot simply sort the unique values and assign them a code increasingly starting from 0, as not all possible floor areas may be present in the dataset. If our query involves a new floor area that is not present in the dataset, it will be difficult to encode it and compare with the codes in the database. 
+    - For `floor_area_sqm` column, we converted each float value of 1 d.p. in the original csv to a integer code by multiplying by 10, using `convert_floor_area_to_code` in `utility.py`. We cannot naively sort the unique values and assign them a code increasingly starting from 0, as not all possible floor areas may be present in the dataset. If our query involves a new floor area that is not present in the dataset, it will be difficult to encode it and compare with the codes in the database. 
 
         - Previous implementations involved finding the next larger and next smaller value in the dataset and their corresponding code, and assign this unseen floor area with the mean of these 2 code (i.e. 0.5). But this requires scanning the entire `val_code_mapper` once, not very efficient.
 
