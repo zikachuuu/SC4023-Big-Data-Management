@@ -33,7 +33,7 @@ class ColumnStoreDB:
         # Likewise, to access a column, use the column index from col_names
         # The data in these columns are the integer codes after mapping from original values using val_code_mapper
         # With disk-based storage, these will be np.memmap objects linked to .bin files on disk
-        self.columns: list[np.ndarray] = []
+        self.columns: list[np.memmap] = []
 
         # Number of rows and columns in the dataset
         self.row_count: int = 0
@@ -60,7 +60,7 @@ class ColumnStoreDB:
         def convert_to_serializable(obj):
             if isinstance(obj, np.integer):
                 return int(obj)
-            elif isinstance(obj, np.ndarray):
+            elif isinstance(obj, np.memmap):
                 return [convert_to_serializable(item) for item in obj.tolist()]
             elif isinstance(obj, list):
                 return [convert_to_serializable(item) for item in obj]

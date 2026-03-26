@@ -101,7 +101,7 @@ def run_queries(
     month_col_idx           : int               = db.col_names["month"]             # Column index for month
     month_val_code_mapper   : dict[str, int]    = db.val_code_mapper[month_col_idx] # Original Value (e.g. "Jan-20") -> Integer Code (e.g. 2001) mapping for month column
     month_code_val_mapper   : dict[int, str]    = db.code_val_mapper[month_col_idx] # Integer Code (e.g. 2001) -> Original Value (e.g. "Jan-20") mapping for month column
-    month_col               : np.ndarray        = db.columns[month_col_idx]         # Encoded month column (integer codes)
+    month_col               : np.memmap        = db.columns[month_col_idx]         # Encoded month column (integer codes)
     month_zone_maps         : list[list[int]]   = db.zone_maps[month_col_idx]       # Zone maps for month column (list of [min_code, max_code] for each chunk)
 
     # Iterate each chunk only once
@@ -149,7 +149,7 @@ def run_queries(
     town_col_idx        : int               = db.col_names["town"]
     town_val_code_mapper: dict[str, int]    = db.val_code_mapper[town_col_idx]
     town_code_val_mapper: dict[int, str]    = db.code_val_mapper[town_col_idx]
-    town_col            : np.ndarray        = db.columns[town_col_idx]
+    town_col            : np.memmap        = db.columns[town_col_idx]
     town_zone_maps      : list[list[int]]   = db.zone_maps[town_col_idx]
 
     town_codes: list[int] = [town_val_code_mapper[town] for town in target_town_names] 
@@ -194,7 +194,7 @@ def run_queries(
     floor_area_col_idx        : int               = db.col_names["floor_area_sqm"]
     floor_area_val_code_mapper: dict[int, int]    = db.val_code_mapper[floor_area_col_idx]
     floor_area_code_val_mapper: dict[int, int]    = db.code_val_mapper[floor_area_col_idx]
-    floor_area_col            : np.ndarray        = db.columns[floor_area_col_idx]
+    floor_area_col            : np.memmap        = db.columns[floor_area_col_idx]
     floor_area_zone_maps      : list[list[int]]   = db.zone_maps[floor_area_col_idx]
 
     for query_idx, target_min_floor_area in enumerate(queries[1]):
@@ -256,7 +256,7 @@ def run_queries(
     resale_price_col_idx        : int               = db.col_names["resale_price"]
     resale_price_val_code_mapper: dict[int, int]    = db.val_code_mapper[resale_price_col_idx]
     resale_price_code_val_mapper: dict[int, int]    = db.code_val_mapper[resale_price_col_idx]
-    resale_price_col            : np.ndarray        = db.columns[resale_price_col_idx]
+    resale_price_col            : np.memmap        = db.columns[resale_price_col_idx]
     resale_price_zone_maps      : list[list[int]]   = db.zone_maps[resale_price_col_idx]
 
     # Pre-fetch columns and mappers needed for tie-breaking
@@ -328,13 +328,13 @@ def run_queries(
             if min_psm_row_idx is not None:
 
                 block_code_val_mapper: dict[int, str] = db.code_val_mapper[db.col_names["block"]]
-                block_col: np.ndarray = db.columns[db.col_names["block"]]
+                block_col: np.memmap = db.columns[db.col_names["block"]]
 
                 flat_model_code_val_mapper: dict[int, str] = db.code_val_mapper[db.col_names["flat_model"]]
-                flat_model_col: np.ndarray = db.columns[db.col_names["flat_model"]]
+                flat_model_col: np.memmap = db.columns[db.col_names["flat_model"]]
 
                 lease_commence_date_code_val_mapper: dict[int, int] = db.code_val_mapper[db.col_names["lease_commence_date"]]
-                lease_commence_date_col: np.ndarray = db.columns[db.col_names["lease_commence_date"]]
+                lease_commence_date_col: np.memmap = db.columns[db.col_names["lease_commence_date"]]
 
                 year                : str   = "20" + str(month_col[min_psm_row_idx])[:2]   # Extract the year part from the month code (e.g. 2001 -> "20") and add "20" in front to get the full year string (e.g. "20" + "20" -> "2020")
                 month               : str   = str (month_col[min_psm_row_idx])[2:]   # Extract the month part from the month code (e.g. 2001 -> "01")
