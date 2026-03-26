@@ -6,6 +6,7 @@
 - **2026-02-21:** New storage logic for `month` and `floor_area` column. Corresponding querying logic updated.
 - **2026-03-20:** Bug fixes regarding `target_end_month`. Validated correctness of query with PostgreSQL.
 - **2026-03-21:** Further bug fixes regarding `target_end_month`. Improved and generalised correctness query script with SQLite.
+- **2026-03-26:** Implemented disk-based storage for the columnar database.
 
 ## To Start
 Simply install the necessary dependencies from `requirements.txt` and run `main.py`. You will be prompted to enter a matriculation number, which will be parsed to retrieve the correct queries. A copy of the database (since its non persistent) as well as the logs (`run_<matriculation_num>.log`) will be saved in `Logs` folder. The output `ScanResult_<matriculation_num>.csv` will be saved in `Results` folder.

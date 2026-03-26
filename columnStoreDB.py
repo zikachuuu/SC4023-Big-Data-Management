@@ -12,6 +12,9 @@ from utility import convert_month_str_to_code, convert_floor_area_to_code
 
 logger = logging.getLogger("column_store_db")
 
+# Directory to store the binary column files
+DB_DIR = os.path.join(os.path.dirname(__file__), 'DatabaseStorage')
+
 class ColumnStoreDB:
     def __init__(self):
 
@@ -29,6 +32,7 @@ class ColumnStoreDB:
         # Main Column Store data structure: List of numpy arrays, one for each column
         # Likewise, to access a column, use the column index from col_names
         # The data in these columns are the integer codes after mapping from original values using val_code_mapper
+        # With disk-based storage, these will be np.memmap objects linked to .bin files on disk
         self.columns: list[np.ndarray] = []
 
         # Number of rows and columns in the dataset
@@ -104,29 +108,45 @@ class ColumnStoreDB:
         }
 
         database_file_path = os.path.join(os.path.dirname(__file__), 'Logs', 'database_state.json')
+        os.makedirs(os.path.dirname(database_file_path), exist_ok=True)
         with open(database_file_path, 'w') as f:
             json.dump(database_state, f, indent=2)
 
 
     def load_csv(self, filepath):
         # Load the raw data
-        df_temp: pd.DataFrame   = pd.read_csv(filepath)
+        logger.info("Pass 1: Scanning CSV to find unique values and count rows...")
+        
+        # Read just the header to initialize columns without loading the full file
+        df_first_chunk = next(pd.read_csv(filepath, chunksize=1))
+        self.col_names = {col_name: i for i, col_name in enumerate(df_first_chunk.columns)}
+        self.col_count = len(self.col_names)
+        
+        unique_vals_dict = {col: set() for col in self.col_names}
+        self.row_count = 0
+        
+        # Chunk through the file to gather sets of all unique values
+        for chunk in pd.read_csv(filepath, chunksize=CHUNK_SIZE):
+            self.row_count += len(chunk)
+            for col_name in self.col_names:
+                unique_vals_dict[col_name].update(chunk[col_name].dropna().unique())
                 
-        self.row_count          = len(df_temp)
-        self.col_count          = len(df_temp.columns)
-        self.col_names          = {col_name: i for i, col_name in enumerate(df_temp.columns)}
-
         self.val_code_mapper    = [None] * self.col_count  # Placeholder for the value to code mapping for each column
         self.code_val_mapper    = [None] * self.col_count  # Placeholder for the code to value mapping for each column
         self.columns            = [None] * self.col_count  # Placeholder for the encoded columns
-        self.zone_maps          = [None] * self.col_count  # Placeholder for the zone maps for each column
+        self.zone_maps          = [[] for _ in range(self.col_count)]  # Placeholder for the zone maps for each column
 
         # Process Column by Column
-        for (col_name, col_idx) in self.col_names.items():
+        for col_name, col_idx in self.col_names.items():
             
-            unique_vals: np.ndarray = df_temp[col_name].unique()
+            unique_list = list(unique_vals_dict[col_name])
 
             # Encoding is done differently for different columns
+            try:
+                unique_vals = np.sort(np.array(unique_list))
+            except Exception:
+                # Standard sorting (Lexicographical for strings, Numeric for ints)
+                unique_vals = np.array(sorted(unique_list, key=str))
 
             # For "month" column, we convert the month string "Mmm-YY" (eg "Jan-20") to an integer representation (eg 2001) using the convert_month_str_to_code function.
             #   This allows us to preserve the chronological order of the months in the integer codes, which is important for range queries on the "month" column.
@@ -145,56 +165,63 @@ class ColumnStoreDB:
             # For remaining columns, we simply sort the unique values and assign integer codes (starting from 0) based on the sorted order.
             # This includes columns like "resale_price", which faces similiar issues as "floor_area" but it is not involved in querying or filtering
             else:
-                # Standard sorting (Lexicographical for strings, Numeric for ints)
-                sorted_unique_vals = np.sort(unique_vals)
+                self.val_code_mapper[col_idx] = {val: idx for idx, val in enumerate(unique_vals)}
+                self.code_val_mapper[col_idx] = {idx: val for idx, val in enumerate(unique_vals)}
 
-                self.val_code_mapper[col_idx] = {val: idx for idx, val in enumerate(sorted_unique_vals)}
-                self.code_val_mapper[col_idx] = {idx: val for idx, val in enumerate(sorted_unique_vals)}
 
-            # Map the original column to integers
-            encoded_col: np.ndarray = df_temp[col_name].map(self.val_code_mapper[col_idx]).to_numpy(dtype=np.int32)
-            self.columns[col_idx] = encoded_col
+        # We calculate metadata for chunks of rows
+        self.num_chunks = math.ceil(self.row_count / CHUNK_SIZE)
 
-            # We calculate metadata for chunks of rows
-            self.num_chunks = math.ceil(self.row_count / CHUNK_SIZE)
+        logger.info("Pass 2: Encoding CSV chunks, writing to disk, and computing zone maps...")
+        os.makedirs(DB_DIR, exist_ok=True)
+        
+        # Clear/initialize binary files for disk writing
+        bin_filepaths = {}
+        for col_name in self.col_names:
+            filepath_bin = os.path.join(DB_DIR, f"{col_name}.bin")
+            open(filepath_bin, 'w').close() 
+            bin_filepaths[col_name] = filepath_bin
 
-            # Temp list to hold zone map info for this column
-            zone_maps_col = []
-
-            # Determine if this column needs a zone map
-            if col_name in ["month", "floor_area", "resale_price"]:
-                # Min/Max Zone Map
-                for i in range(self.num_chunks):
-                    start_idx   : int           = i * CHUNK_SIZE
-                    end_idx     : int           = min((i + 1) * CHUNK_SIZE, self.row_count)
-                    chunk       : np.ndarray    = encoded_col[start_idx:end_idx]
-                    
+        # Second pass: map the original column to integers and append straight to binary disk storage
+        for chunk in pd.read_csv(filepath, chunksize=CHUNK_SIZE):
+            for col_name, col_idx in self.col_names.items():
+                
+                # Map the original column to integers
+                encoded_chunk = chunk[col_name].map(self.val_code_mapper[col_idx]).to_numpy(dtype=np.int32)
+                
+                with open(bin_filepaths[col_name], 'ab') as f:
+                    f.write(encoded_chunk.tobytes())
+                
+                # Determine if this column needs a zone map
+                if col_name in ["month", "floor_area_sqm", "resale_price"]:
+                    # Min/Max Zone Map
                     # Because we sorted the mapper, the integer codes preserve order!
                     # min(code) corresponds to min(value), max(code) to max(value).
-                    zone_maps_col.append([np.min(chunk), np.max(chunk)])
+                    self.zone_maps[col_idx].append([int(np.min(encoded_chunk)), int(np.max(encoded_chunk))])
 
-            elif col_name == "town":
-                # Unique Set Zone Map
-                for i in range(self.num_chunks):
-                    start_idx   : int           = i * CHUNK_SIZE
-                    end_idx     : int           = min((i + 1) * CHUNK_SIZE, self.row_count)
-                    chunk       : np.ndarray    = encoded_col[start_idx:end_idx]
-                    
+                elif col_name == "town":
+                    # Unique Set Zone Map
                     # Store unique town codes appearing in this chunk
-                    zone_maps_col.append(np.unique(chunk).tolist())
-            
-            else:
-                # No zone map for other columns
-                zone_maps_col = []
+                    self.zone_maps[col_idx].append(np.unique(encoded_chunk).tolist())
+                
+                else:
+                    # No zone map for other columns
+                    pass           
 
-            self.zone_maps[col_idx] = zone_maps_col            
 
-        # Clean up temp DataFrame to save memory
-        del df_temp
+        logger.info("Pass 3: Linking disk files using np.memmap...")
+        for col_name, col_idx in self.col_names.items():
+            self.columns[col_idx] = np.memmap(
+                bin_filepaths[col_name], 
+                dtype=np.int32, 
+                mode='r', 
+                shape=(self.row_count,)
+            )
+
+        # Clean up memory
         gc.collect()
 
         # Log the database state after loading
         self._log_database_state()
 
         logger.info(f"Loaded CSV with {self.row_count} rows and {self.col_count} columns into Column Store Database.")
-

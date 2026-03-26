@@ -4,5 +4,6 @@ __pycache__/
 
 Logs/
 Results/
+DatabaseStorage/
 
 resale_prices.db
