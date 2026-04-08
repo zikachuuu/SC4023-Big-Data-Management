@@ -6,208 +6,137 @@ import gc
 import pandas as pd
 import math
 import logging
+from BTrees.IOBTree import IOBTree
 
-from constants import CHUNK_SIZE, MONTH_MAP_DIGIT
+from constants import CHUNK_SIZE, LOG_DIR, DB_DIR
 from utility import convert_month_str_to_code, convert_floor_area_to_code
 
 logger = logging.getLogger("column_store_db")
 
-# Directory to store the binary column files
-DB_DIR = os.path.join(os.path.dirname(__file__), 'DatabaseStorage')
-
 class ColumnStoreDB:
     def __init__(self):
-
-        # Dictionary to map column names to their column indexes (eg. "month" -> 0, "town" -> 1, etc.)
         self.col_names: dict[str, int] = {}
-
-        # Compression: For each column, we mapped the increasingly sorted unique values (strings or int) to integer codes.
-        # This saves space and allows for faster comparisons.
-        # To access the column, use the column index from col_names
         self.val_code_mapper: list[dict[str | int, int]] = [] 
-
-        # Reverse mapping for decoding integer codes back to original values
         self.code_val_mapper: list[dict[int, str | int]] = []  
-
-        # Main Column Store data structure: List of numpy arrays, one for each column
-        # Likewise, to access a column, use the column index from col_names
-        # The data in these columns are the integer codes after mapping from original values using val_code_mapper
-        # With disk-based storage, these will be np.memmap objects linked to .bin files on disk
         self.columns: list[np.memmap] = []
-
-        # Number of rows and columns in the dataset
+        
         self.row_count: int = 0
         self.col_count: int = 0
-
-        # Number of chunks in the dataset based on CHUNK_SIZE
         self.num_chunks: int = 0
-
-        # Zone Maps: For selected columns, we will store a list of metavalues for each chunk of rows (based on CHUNK_SIZE)
-        # Outer list: Index corresponds to column index
-        # Middle list: Index corresponds to chunk index
-        # Inner list: Stores the metadata for that chunk. The content depends on the column:
-        #   column "month"          -> [earliest month, latest month] for each chunk
-        #   column "town"           -> [towns that appeared in the chunk]
-        #   column "floor_area"     -> [min floor area, max floor area] for each chunk
-        #   Other columns           -> No zone map (empty list)
-        # The metedata in the zone maps are stored in terms of the integer codes after mapping from original values using val_code_mapper
+        
         self.zone_maps: list[list[list[int]]] = []
+        
+        # In-Memory B-Tree for clustered month lookups
+        # Maps month_code (int) -> (start_row_idx, end_row_idx)
+        self.month_btree = IOBTree() 
     
-
     def _log_database_state(self):
-        # Log the entire database to a file for debugging
-        # Helper function to convert numpy types to JSON-serializable Python types
         def convert_to_serializable(obj):
-            if isinstance(obj, np.integer):
-                return int(obj)
-            elif isinstance(obj, np.memmap):
-                return [convert_to_serializable(item) for item in obj.tolist()]
-            elif isinstance(obj, list):
-                return [convert_to_serializable(item) for item in obj]
-            elif isinstance(obj, dict):
-                return {k: convert_to_serializable(v) for k, v in obj.items()}
+            if isinstance(obj, np.integer): return int(obj)
+            elif isinstance(obj, np.memmap): return [convert_to_serializable(item) for item in obj.tolist()]
+            elif isinstance(obj, list): return [convert_to_serializable(item) for item in obj]
+            elif isinstance(obj, dict): return {k: convert_to_serializable(v) for k, v in obj.items()}
             return obj
         
         database_state = {
             "Column Store Database State": {
                 "Column Names": self.col_names,
-                "Value Code Mappers": [
-                    {
-                        col: {str(val): convert_to_serializable(code) for val, code in mapper.items()}
-                    }
-                    for col, mapper in enumerate(self.val_code_mapper)
-                ],
-                "Code Value Mappers": [
-                    {
-                        col: {code: convert_to_serializable(val) for code, val in mapper.items()}
-                    }
-                    for col, mapper in enumerate(self.code_val_mapper)
-                ],
-                "Columns": [
-                    {
-                        col: convert_to_serializable(data)
-                    }
-                    for col, data in enumerate(self.columns)
-                ],
                 "Row Count": self.row_count,
                 "Number of Chunks": self.num_chunks,
-                "Zone Maps": [
-                    {
-                        col: {
-                            "Chunks": [
-                                {
-                                    chunk: convert_to_serializable(zone)
-                                }
-                                for chunk, zone in enumerate(zones)
-                            ]
-                        }
-                    }
-                    for col, zones in enumerate(self.zone_maps)
-                ]
+                "Month B-Tree": {k: v for k, v in self.month_btree.items()}
             }
         }
 
-        database_file_path = os.path.join(os.path.dirname(__file__), 'Logs', 'database_state.json')
+        database_file_path = os.path.join(LOG_DIR, 'database_state.json') if 'LOG_DIR' in globals() else os.path.join(DB_DIR, 'database_state.json')
         os.makedirs(os.path.dirname(database_file_path), exist_ok=True)
         with open(database_file_path, 'w') as f:
             json.dump(database_state, f, indent=2)
 
-
     def load_csv(self, filepath):
-        # Load the raw data
-        logger.info("Pass 1: Scanning CSV to find unique values and count rows...")
+        logger.info("Pass 0: Physically clustering (sorting) data by Month...")
         
-        # Read just the header to initialize columns without loading the full file
-        df_first_chunk = next(pd.read_csv(filepath, chunksize=1))
-        self.col_names = {col_name: i for i, col_name in enumerate(df_first_chunk.columns)}
+        # Load and sort data to physically cluster identical months
+        df = pd.read_csv(filepath)
+        df['month_code'] = df['month'].apply(convert_month_str_to_code)
+        df.sort_values(by='month_code', inplace=True)
+        df.drop(columns=['month_code'], inplace=True)
+        
+        # Save clustered data to a temporary file
+        sorted_filepath = os.path.join(DB_DIR, 'clustered_temp.csv')
+        os.makedirs(DB_DIR, exist_ok=True)
+        df.to_csv(sorted_filepath, index=False)
+        filepath = sorted_filepath
+
+        self.col_names = {col_name: i for i, col_name in enumerate(df.columns)}
         self.col_count = len(self.col_names)
-        
-        unique_vals_dict = {col: set() for col in self.col_names}
-        self.row_count = 0
-        
-        # Chunk through the file to gather sets of all unique values
-        for chunk in pd.read_csv(filepath, chunksize=CHUNK_SIZE):
-            self.row_count += len(chunk)
-            for col_name in self.col_names:
-                unique_vals_dict[col_name].update(chunk[col_name].dropna().unique())
+        self.row_count = len(df)
+        self.num_chunks = math.ceil(self.row_count / CHUNK_SIZE)
+
+        logger.info("Pass 1: Scanning CSV to find unique values...")
+        unique_vals_dict = {col: set(df[col].dropna().unique()) for col in self.col_names}
+        del df # Free memory
+        gc.collect()
                 
-        self.val_code_mapper    = [None] * self.col_count  # Placeholder for the value to code mapping for each column
-        self.code_val_mapper    = [None] * self.col_count  # Placeholder for the code to value mapping for each column
-        self.columns            = [None] * self.col_count  # Placeholder for the encoded columns
-        self.zone_maps          = [[] for _ in range(self.col_count)]  # Placeholder for the zone maps for each column
+        self.val_code_mapper = [None] * self.col_count
+        self.code_val_mapper = [None] * self.col_count
+        self.columns = [None] * self.col_count
+        self.zone_maps = [[] for _ in range(self.col_count)]
 
-        # Process Column by Column
         for col_name, col_idx in self.col_names.items():
-            
             unique_list = list(unique_vals_dict[col_name])
-
-            # Encoding is done differently for different columns
             try:
                 unique_vals = np.sort(np.array(unique_list))
             except Exception:
-                # Standard sorting (Lexicographical for strings, Numeric for ints)
                 unique_vals = np.array(sorted(unique_list, key=str))
 
-            # For "month" column, we convert the month string "Mmm-YY" (eg "Jan-20") to an integer representation (eg 2001) using the convert_month_str_to_code function.
-            #   This allows us to preserve the chronological order of the months in the integer codes, which is important for range queries on the "month" column.
-            #   Also, it only require 2 bytes (or more specifically, 12 bits i.e. 0 to 4095) to store the encoded month values
             if col_name == "month":
                 self.val_code_mapper[col_idx] = {val: convert_month_str_to_code(val) for val in unique_vals}
                 self.code_val_mapper[col_idx] = {convert_month_str_to_code(val): val for val in unique_vals}
-
-            # For "floor_area_sqm" column, we keep the original numeric values but convert the floats to integers by multiplying by 10
-            #   This is because not all possible floor area values appear in the dataset, and if our query involves a floor area value that does not appear in the dataset
-            #   We can still convert it to the corresponding integer code and perform comparisons using the encoded integer values.
             elif col_name == "floor_area_sqm":
                 self.val_code_mapper[col_idx] = {val: convert_floor_area_to_code(val) for val in unique_vals}
                 self.code_val_mapper[col_idx] = {convert_floor_area_to_code(val): val for val in unique_vals}
-
-            # For remaining columns, we simply sort the unique values and assign integer codes (starting from 0) based on the sorted order.
-            # This includes columns like "resale_price", which faces similiar issues as "floor_area" but it is not involved in querying or filtering
             else:
                 self.val_code_mapper[col_idx] = {val: idx for idx, val in enumerate(unique_vals)}
                 self.code_val_mapper[col_idx] = {idx: val for idx, val in enumerate(unique_vals)}
 
-
-        # We calculate metadata for chunks of rows
-        self.num_chunks = math.ceil(self.row_count / CHUNK_SIZE)
-
-        logger.info("Pass 2: Encoding CSV chunks, writing to disk, and computing zone maps...")
-        os.makedirs(DB_DIR, exist_ok=True)
-        
-        # Clear/initialize binary files for disk writing
+        logger.info("Pass 2: Encoding CSV chunks, writing to disk, and building Indexes...")
         bin_filepaths = {}
         for col_name in self.col_names:
             filepath_bin = os.path.join(DB_DIR, f"{col_name}.bin")
             open(filepath_bin, 'w').close() 
             bin_filepaths[col_name] = filepath_bin
 
-        # Second pass: map the original column to integers and append straight to binary disk storage
+        row_offset = 0
+        current_month = None
+        start_row = 0
+
         for chunk in pd.read_csv(filepath, chunksize=CHUNK_SIZE):
             for col_name, col_idx in self.col_names.items():
-                
-                # Map the original column to integers
                 encoded_chunk = chunk[col_name].map(self.val_code_mapper[col_idx]).to_numpy(dtype=np.int32)
                 
                 with open(bin_filepaths[col_name], 'ab') as f:
                     f.write(encoded_chunk.tobytes())
                 
-                # Determine if this column needs a zone map
-                if col_name in ["month", "floor_area_sqm", "resale_price"]:
-                    # Min/Max Zone Map
-                    # Because we sorted the mapper, the integer codes preserve order!
-                    # min(code) corresponds to min(value), max(code) to max(value).
+                if col_name == "month":
+                    for i, row_month_code in enumerate(encoded_chunk):
+                        global_row_idx = row_offset + i
+                        if row_month_code != current_month:
+                            if current_month is not None:
+                                # Insert contiguous boundaries into the IOBTree
+                                self.month_btree[int(current_month)] = (int(start_row), int(global_row_idx - 1))
+                            current_month = row_month_code
+                            start_row = global_row_idx
+                            
+                elif col_name in ["floor_area_sqm", "resale_price"]:
                     self.zone_maps[col_idx].append([int(np.min(encoded_chunk)), int(np.max(encoded_chunk))])
-
                 elif col_name == "town":
-                    # Unique Set Zone Map
-                    # Store unique town codes appearing in this chunk
-                    self.zone_maps[col_idx].append(np.unique(encoded_chunk).tolist())
-                
-                else:
-                    # No zone map for other columns
-                    pass           
+                    self.zone_maps[col_idx].append(np.unique(encoded_chunk).tolist())           
 
+            row_offset += len(chunk)
+
+        # Insert final month range into B-Tree
+        if current_month is not None:
+            self.month_btree[int(current_month)] = (int(start_row), int(self.row_count - 1))
 
         logger.info("Pass 3: Linking disk files using np.memmap...")
         for col_name, col_idx in self.col_names.items():
@@ -218,10 +147,6 @@ class ColumnStoreDB:
                 shape=(self.row_count,)
             )
 
-        # Clean up memory
         gc.collect()
-
-        # Log the database state after loading
         self._log_database_state()
-
-        logger.info(f"Loaded CSV with {self.row_count} rows and {self.col_count} columns into Column Store Database.")
+        logger.info(f"Loaded CSV. B-Tree Indexed.")

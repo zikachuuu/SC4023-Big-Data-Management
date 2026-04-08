@@ -7,100 +7,63 @@
 - **2026-03-20:** Bug fixes regarding `target_end_month`. Validated correctness of query with PostgreSQL.
 - **2026-03-21:** Further bug fixes regarding `target_end_month`. Improved and generalised correctness query script with SQLite.
 - **2026-03-26:** Implemented disk-based storage for the columnar database.
+- **2026-04-08:** Implemented clustered b-tree, sorted the data by month. Added vectorised processing to the query. Verified correctness w.r.t. our matric numbers.
 
 ## To Start
 Simply install the necessary dependencies from `requirements.txt` and run `main.py`. You will be prompted to enter a matriculation number, which will be parsed to retrieve the correct queries. A copy of the database (since its non persistent) as well as the logs (`run_<matriculation_num>.log`) will be saved in `Logs` folder. The output `ScanResult_<matriculation_num>.csv` will be saved in `Results` folder.
 
 ## Database Design
-The entire csv is loaded into memory (its only 20.6MB) as a Dataframe. We then parse this temporary Dataframe column by column, and populate our column store database.
+We implemented a columnar database by creating a ColumnStoreDB class in Python. The data structure consists of independent 1-dimensional NumPy memory-mapped (memmap) arrays, where these arrays are stored as binary files on disk. Each column in the database corresponds to a NumPy memmap array. This simulates a disk-based storage scheme for our project.
 
-The column store database is made up of the following data structures.
-- `col_names`: A dictionary that maps each column name to a index.
+During initialization, the entire CSV is first physically sorted (clustered) chronologically by month. The data is then parsed in horizontal chunks, vertically shredded into independent columns, and encoded before being written directly to separate `.bin` files on the disk.
 
-- `val_code_mapper`: A list of dictionary for which, for each column, map each unqiue value (string or integer) to an integer code. The integer code preserves the ordering of the values.
+The column store database is made up of the following data structures:
+- `col_names`: A dictionary that maps each column name to an index.
 
-    - For `month` column, we converted each string value in the original csv (e.g. Jan-20, Dec-19) to a 4 digit code (e.g. 2001, 1912) using `convert_str_date_to_code` in `utility.py`. This integer code preserves the chronological order of the dates (e.g. 1912 < 2001). Also, it only require 2 bytes (or more specifically, 12 bits i.e. 0 to 4095) to store the encoded month values.
+- `val_code_mapper`: A list of dictionaries which, for each column, maps each unique value (string or integer) to a 32-bit integer code. The integer code preserves the ordering of the values.
+    - For the `month` column, each string value (e.g., Jan-20, Dec-19) is converted to a 4-digit code (e.g., 2001, 1912). This preserves chronological order natively (e.g., 1912 < 2001).
+    - For the `floor_area_sqm` column, float values are converted to an integer code by multiplying by 10, preserving 1 decimal place of precision while enabling fast integer math.
+    - For remaining columns, we sort them lexicographically by increasing order and map each value to an integer code starting from 0.
 
-    - For `floor_area_sqm` column, we converted each float value of 1 d.p. in the original csv to a integer code by multiplying by 10, using `convert_floor_area_to_code` in `utility.py`. We cannot naively sort the unique values and assign them a code increasingly starting from 0, as not all possible floor areas may be present in the dataset. If our query involves a new floor area that is not present in the dataset, it will be difficult to encode it and compare with the codes in the database. 
+- `code_val_mapper`: The reverse mapping of integer codes to unique values for each column, used when writing to the final CSV.
 
-        - Previous implementations involved finding the next larger and next smaller value in the dataset and their corresponding code, and assign this unseen floor area with the mean of these 2 code (i.e. 0.5). But this requires scanning the entire `val_code_mapper` once, not very efficient.
+- `columns`: The main Column Store Database. IThis is a list of NumPy memory-mapped arrays (`np.memmap`). These dynamically link to the `.bin` files on disk, allowing the OS to page chunks of data into memory only when strictly needed.
 
-    - For remaining columns, we can sort them lexicographically by increasing order, and map each value to a integer code starting from 0. Even for `Resale_Price` column, which faces similar issue as `floor_area` above, but it is not involved in querying or filtering.
-    
-        - Note that the code for `town` here is different from the digit for querying in Table 1.
-
-- `code_val_mapper`: The reverse mapping of integer code to unique values for each column. This can be done as integer code and unique values are one-to-one.
-
-- `columns`: Main Column Store Database. A list of numpy arrays, where each numpy array corresponds to a column, and stores the values from `ResalePricesSingapore.csv` in terms of their codes.
-
-- `row_count` and `column_count`: Self explainatory
+- `month_btree`: An in-memory Clustered B-Tree (`IOBTree` from the `BTrees` library). Because the data is physically sorted by month on disk, all identical months sit in contiguous rows. The B-Tree maps each integer `month_code` to its exact physical row boundaries `(start_row_idx, end_row_idx)`.
 
 - `num_chunks`: ceil (`row_count` / `CHUNK_SIZE`)
 
-- `zone_maps`: For selected columns only, we store a list of metadata for each chunk. This is a list of list of list of int, where the outer list corresponds to the columns, the middle list corresponds to a chunk for each column, and the inner list is the metadata of each chunk. The contents of the inner list differs for each column: (all stored as codes)
+- `zone_maps`: To skip irrelevant data blocks, we store metadata for chunks of 1,000 rows. This is a nested list where we track:
+    - column `town`: A unique set of towns that appeared in the chunk.
+    - column `floor_area`: `[min floor area, max floor area]` for the chunk.
+    - column `resale_price`: `[min price, max price]` for the chunk.
 
-    - column `month`: [earliest month, latest month] for each chunk
-    - column `town`: [towns that appeared in the chunk] for each chunk
-    - column `floor_area`: [min floor area, max floor area] for each chunk
-    - column `resale_price`: [min price, max price] for each chunk
-    - all other columns: empty array [] for each chunk
-
-Lastly, the temporary Dataframe is cleared, and we log out the column store data structure as `database_state.json` to `Logs` folder.
+Lastly, we log out the column store data structure summary as `database_state.json` to the `Logs` folder.
 
 ## Query
 
 ### 1. Set up
+`queries` are stored in a column-store like fashion. In this list of lists:
+- The first list stores the `(start_month_code, end_month_code)` of each query.
+- The second list stores the `minimum_floor_area` (i.e., y) of each query.
+- The last list stores the metadata `(x, y)` of each query for tracking.
 
-`queries` are stored in a column-store like fashion. In this list of list, 
+The `target_town_names` are stored as a separate list of strings as they apply to all queries.
 
-- first list stores the `(start_month_code, end_month_code)` of each query (code as in e.g. 2001 for Jan-20).
+### 2. Filtering
+Instead of scanning column-by-column using loops, we utilise a variety of techniques, such as the B-Tree, Zone Maps, and NumPy vectorization.
 
-- second list stores the `minimum_floor_area` (i.e. y) of each query
+**Level 1: Clustered Index (B-Tree)**
+For a given query, the system first queries the in-memory B-Tree `month_btree` with `min=target_start_month` and `max=target_end_month`. This operates in logarithmic time and returns the `min_row_idx` and `max_row_idx` boundaries for that date range.
 
-- last list stores the metadata `(x, y)` of each query. 
+**Level 2: Zone Map Data Skipping**
+The query calculates which 1,000-row chunks overlap with the B-Tree's row boundaries. For each overlapping chunk, it checks the `town` and `floor_area` zone maps. If a chunk's max floor area is smaller than the target `y`, or if the chunk does not contain any of the target towns, the entire 1,000-row chunk is skipped without performing any disk I/Os.
 
-The index of each element in the inner list corresponds to the query index. This design allow us to scan each column in the database no more than once, and for each column, we can check the condition for all queries at once.
+**Level 3: NumPy Vectorization**
+For the chunks that pass the Zone Map checks, the program extracts the overlapping data slices from the memory-mapped arrays. Instead of iterating row-by-row, it uses NumPy vectorized operations to evaluate the entire data slice simultaneously in C. 
+It creates a `valid_town_mask` and a `valid_area_mask`, and combines them using a bitwise AND operation. The resulting `True` indices are translated to global row indices and added to the candidate list.
 
-The `target_town_names` are stored as a seperate list of strings as it applies for all queries.
+### 3. PSM Tie-Breaking and Late Materialization
+Finally, for the matching candidate rows, the system calculates the Price Per Square Meter (PSM). It tracks the row with the absolute minimum PSM (bounded by `MAX_PSM`). If multiple rows tie, it applies tie-breaking (earliest month -> alphabetical town -> alphabetical block). 
 
-We keep a list of queues `valid_rows` to store for each query, the current rows index that are valid. They are initially empty, and will be populated once we have parsed the first column. For subsequent columns, only the row indexes in the queues will be checked, and if they do not satify the conditions, they will be dequeued.
-
-
-### 2. Column by column scanning
-
-We currently scan in a deterministic manner: `month` -> `town` -> `floor_area`.
-
-For column `month`, we will only iterate each chunk. For each chunk, we check for each query, whether the chunk contains the target months. If `chunk_min_month_code` > `target_end_month_code` or `chunk_max_month_code` < `target_start_month_code`, then we know the chunk does not contain the target months at all and we can skip the chunk entirely for this query. If we did not skip the chunk, then it may have valid rows, so for this query, we have to scan this chunk row by row. It is a valid row if `target_start_month_code` <= `row_month_code` <= `target_end_month_code`.
-
-For subsequent columns, we no longer have to scan chunk by chunk. For each query, we just have to check the valid row indices found from previous columns.
-
-For column `town`, we keep the row if `row_town` is in `target_town_names`.
-
-For column `floor_area`, we keep the row if `row_floor_area` >= `minimum_floor_area`.
-
-We have found the queue of valid row indices for each query, and for each query, we will find the row with the minimum psm, and append it to our output csv.
-
-
-## TODO
-
-- Only the `month` column use `zone_map` as it is the first column to be scanned. For subsequent columns, it is no longer efficient to use zone map. We should let the user to choose the order of the four columns to parse so that we can compare the performance.
-
-    - Only possible case is when the database is too large, so we can only load each chunk into the memory at once. In this case, we can still use `zone_map` for every column to check whether we should even load this chunk in the first case.
-
-- As you may have noticed, for `month` column (or whichever column thats scanned first), if for a query, the chunk might contains the valid rows, then we have to scan each row in the chunk. In the very worst case, it will degradate to each query scanning the entire column once. It needs some slight modifications.
-
-- Consider the case when the entire data cannot be fully loaded into the memory at once. Then maybe we have to load chunk by chunk. And for querying, we will also load the column store database from storage chunk by chunk.
-
-- Enhance column stores: the lecture presented 5 (or 6 depending on how you count it) techniques to optimize column store. We should at least try to implement all of them here, if have time then can add more.
-
-    - ✅ **Compression:** Already implemented by `val_code_mapper`
-
-    - ✅ **Shared Scan:** Implemented in querying (but may need some slight modifications)
-
-    - ✅ **Zone Map:** Already implemented by `zone_maps`
-
-    - ❌ **Enhanced with sorting:** Need change the csv loading logic of column store DB. But functionality wise overlaps with Zone Map (it still applies for only the first column to be scanned), not really necessary to implement?
-
-    - ❌ **Enhanced with Index:** Literally skipped by Prof, but we can try to implement if you guys want to brush up ur B+ tree.
-
-     - ❌ **Vectorized Processing:** For cache friendliness, but we literally load the entire csv to memory though. So I dont think need to implement?
+Once the final row index is determined, the system fetches the encoded values from the separate memory-mapped columns, decoding them via `code_val_mapper`, and writing the final human-readable line to the output CSV.
