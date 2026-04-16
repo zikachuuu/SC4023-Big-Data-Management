@@ -1,3 +1,7 @@
+"""
+generate_all_possible_matric_num.py generates 100 test matriculation numbers and their corresponding output CSV files.
+"""
+
 import os
 import gc
 from constants import INPUT_FILE, RESULTS_DIR
@@ -6,6 +10,11 @@ from utility import configure_logging
 from main import parse_matriculation, run_queries
 
 def generate_all():
+    """
+    Load the database, generate all 100 test matriculation numbers of the form
+    '01234XXC' where XX ranges from 00 to 99, and for each test matriculation
+    number, generate the corresponding ScanResult_01234XXC.csv file.
+    """
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
     if not os.path.exists(INPUT_FILE):

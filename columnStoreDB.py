@@ -1,3 +1,7 @@
+"""
+columnStoreDB.py contains the ColumnStoreDB class that will be used to implement the column store database.
+"""
+
 import csv
 import json
 import numpy as np
@@ -14,24 +18,46 @@ from utility import convert_month_str_to_code, convert_floor_area_to_code
 logger = logging.getLogger("column_store_db")
 
 class ColumnStoreDB:
+    """
+    A disk-based columnar database that stores each column as a memory-mapped
+    binary file (np.memmap) with integer-encoded values.
+
+    Refer to report for the design features of the database.
+    """
+
     def __init__(self):
+        """
+        Initialise an empty ColumnStoreDB.
+
+        List of attributes:
+            col_names       : dict[str, int]              - column name to column index.
+            val_code_mapper : list[dict[str|int, int]]    - per-column mapping from raw value to integer code.
+            code_val_mapper : list[dict[int, str|int]]    - per-column mapping from integer code to raw value.
+            columns         : list[np.memmap]             - per-column memory-mapped int32 array.
+            row_count       : int                         - total number of rows loaded.
+            col_count       : int                         - total number of columns.
+            num_chunks      : int                         - number of CHUNK_SIZE chunks (for zone maps).
+            zone_maps       : list[list[list[int]]]       - per-column, per-chunk zone map data.
+            month_btree     : IOBTree                     - B-Tree index mapping month_code to (start_row, end_row).
+        """
         self.col_names: dict[str, int] = {}
         self.val_code_mapper: list[dict[str | int, int]] = [] 
         self.code_val_mapper: list[dict[int, str | int]] = []  
         self.columns: list[np.memmap] = []
-        
         self.row_count: int = 0
         self.col_count: int = 0
         self.num_chunks: int = 0
-        
         self.zone_maps: list[list[list[int]]] = []
-        
-        # In-Memory B-Tree for clustered month lookups
-        # Maps month_code (int) -> (start_row_idx, end_row_idx)
         self.month_btree = IOBTree() 
     
     def _log_database_state(self):
+        """
+        Save the current database metadata (column names, row count,
+        chunk count, and B-Tree contents) to a JSON file for debugging purposes.
+        """
         def convert_to_serializable(obj):
+            """Recursively convert NumPy types and memmap arrays to native
+            Python types so they can be serialised by json.dump."""
             if isinstance(obj, np.integer): return int(obj)
             elif isinstance(obj, np.memmap): return [convert_to_serializable(item) for item in obj.tolist()]
             elif isinstance(obj, list): return [convert_to_serializable(item) for item in obj]
@@ -53,7 +79,35 @@ class ColumnStoreDB:
             json.dump(database_state, f, indent=2)
 
     def load_csv(self, filepath):
-        logger.info("Pass 0: Physically clustering (sorting) data by Month...")
+        """
+        Process the CSV file into the columnar database.
+
+        We divide this process into four passes:
+
+        Pass 0 - Physical clustering:
+        Reads the entire CSV with pandas, sorts it by month_code so that
+        rows with the same month are contiguous on disk, then writes a
+        temporary clustered CSV to DB_DIR.
+
+        Pass 1 - Retrieving unique values and dictionary encoding setup:
+        Scans each column's unique values and builds the val_code_mapper
+        and code_val_mapper dictionaries. Special encoding is used for
+        'month' and 'floor_area_sqm' to preserve sort order and precision.
+        Refer to report for specific details.
+
+        Pass 2 - Chunk-wise encoding, disk write and B-tree index construction:
+        Reads the clustered CSV in CHUNK_SIZE chunks. For each chunk,
+        we encode every column's values via val_code_mapper and append
+        the int32 bytes to the column's .bin file.
+        We also build the B-tree month_btree by tracking contiguous month boundaries.
+        We also build zone maps for 'floor_area_sqm' and 'resale_price'
+        (min/max per chunk) and for 'town' (distinct codes per chunk).
+
+        Pass 3 - Map to memmap files on disk
+        Links each .bin file to a np.memmap array on disk to simulate
+        disk-based storage.
+        """
+        logger.info("Pass 0: Sorting data by month column...")
         
         # Load and sort data to physically cluster identical months
         df = pd.read_csv(filepath)
@@ -99,7 +153,7 @@ class ColumnStoreDB:
                 self.val_code_mapper[col_idx] = {val: idx for idx, val in enumerate(unique_vals)}
                 self.code_val_mapper[col_idx] = {idx: val for idx, val in enumerate(unique_vals)}
 
-        logger.info("Pass 2: Encoding CSV chunks, writing to disk, and building Indexes...")
+        logger.info("Pass 2: Encoding CSV chunks, writing to disk, and building B-tree...")
         bin_filepaths = {}
         for col_name in self.col_names:
             filepath_bin = os.path.join(DB_DIR, f"{col_name}.bin")
@@ -122,7 +176,6 @@ class ColumnStoreDB:
                         global_row_idx = row_offset + i
                         if row_month_code != current_month:
                             if current_month is not None:
-                                # Insert contiguous boundaries into the IOBTree
                                 self.month_btree[int(current_month)] = (int(start_row), int(global_row_idx - 1))
                             current_month = row_month_code
                             start_row = global_row_idx
@@ -134,7 +187,6 @@ class ColumnStoreDB:
 
             row_offset += len(chunk)
 
-        # Insert final month range into B-Tree
         if current_month is not None:
             self.month_btree[int(current_month)] = (int(start_row), int(self.row_count - 1))
 
@@ -149,4 +201,4 @@ class ColumnStoreDB:
 
         gc.collect()
         self._log_database_state()
-        logger.info(f"Loaded CSV. B-Tree Indexed.")
+        logger.info(f"Loaded CSV. B-Tree index created.")

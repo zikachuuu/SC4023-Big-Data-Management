@@ -1,3 +1,7 @@
+"""
+verify_scan_results.py serves as a verifier for our output ScanResult CSV files.
+"""
+
 import re
 import sqlite3
 import csv
@@ -15,6 +19,13 @@ MONTH_MAP = {1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun", 7: "Jul
 MONTH_NUM_MAP = {v: k for k, v in MONTH_MAP.items()}
 
 def parse_matriculation(matric_num):
+    """
+    Derive the query parameters (start month code and target towns) from
+    the matriculation number.
+
+    Note that this is a duplicate of the parse_matriculation() in main.py, 
+    so that this file is independent of main.py.
+    """
     digits = [int(d) for d in matric_num if d.isdigit()]
     last_digit = digits[-1]
     if last_digit >= 5:
@@ -27,6 +38,14 @@ def parse_matriculation(matric_num):
     return start_year, start_month, towns
 
 def generate_sql_query(start_year, start_month, x, y, towns):
+    """
+    Build a SQLite query that finds the single row with the lowest PSM
+    matching the given (x, y) criteria, applying the same tiebreaker
+    ordering used by the columnar database.
+
+    Note that this SQLite query is functionally identical to the
+    columnar database query, just implemented in SQL.
+    """
     months = []
     year = start_year
     month = start_month
@@ -40,7 +59,6 @@ def generate_sql_query(start_year, start_month, x, y, towns):
     months_str = ','.join([f"'{m}'" for m in months])
     towns_str = ','.join([f"'{t}'" for t in towns])
     
-    # Query optimized to use pre-calculated psm column
     sql = f'''
     SELECT month, town, flat_type, block, street_name, storey_range, floor_area_sqm, flat_model, lease_commence_date, resale_price, psm
     FROM resale
@@ -75,9 +93,15 @@ csv_file = './ResalePricesSingapore.csv'
 sqlite_db = 'resale_prices.db'
 
 def load_csv_to_sqlite():
+    """
+    Create a 'resale' table in the SQLite database from the raw CSV file.
+
+    During insertion a psm column is calculated and stored alongside
+    the original columns.  A composite index on (month, town, floor_area_sqm, psm)
+    is created to accelerate the query.
+    """
     conn = sqlite3.connect(sqlite_db)
     c = conn.cursor()
-    # Added 'psm' column to pre-calculate price per square meter
     c.execute('''CREATE TABLE IF NOT EXISTS resale (
         month TEXT, town TEXT, flat_type TEXT, block TEXT, street_name TEXT, storey_range TEXT,
         floor_area_sqm REAL, flat_model TEXT, lease_commence_date INTEGER, resale_price INTEGER,
@@ -106,10 +130,20 @@ def load_csv_to_sqlite():
         conn.commit()
     conn.close()
 
+# ---------------------------------------------------------
+# Main function
+# ---------------------------------------------------------
+
 if __name__ == '__main__':
+    """
+    Build a SQLite database on the original CSV file, and for each matriculation number,
+    generate the corresponding SQL query and output CSV file. The results of the SQL query
+    CSV file is then compared with the columnar database's output CSV file for discrepancies,
+    and flag any mismatches if any.
+    """
     load_csv_to_sqlite()
     
-    # Open DB connection ONCE globally, not 568 times inside the loops
+    # Open DB connection
     conn = sqlite3.connect(sqlite_db)
     c = conn.cursor()
 
@@ -141,7 +175,7 @@ if __name__ == '__main__':
                 for y in range(80, 151):
                     query = generate_sql_query(start_year, start_month, x, y, towns)
                     
-                    # Execute query using the persistent connection
+                    # Execute query
                     c.execute(query)
                     db_row = c.fetchone()
                     
@@ -156,7 +190,6 @@ if __name__ == '__main__':
                         floor_area = str(float(db_row[6]))
                         flat_model = db_row[7]
                         lease_commence = db_row[8]
-                        # Use the pre-calculated psm
                         price_per_sqm = str(int(float(db_row[10])))
                         
                         expected = [year_out, month_out, town, block, floor_area, flat_model, lease_commence, price_per_sqm]

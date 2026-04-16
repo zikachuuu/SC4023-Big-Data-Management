@@ -1,3 +1,7 @@
+"""
+main.py is the main function that executes the queries.
+"""
+
 import csv
 import numpy as np
 import os
@@ -12,6 +16,10 @@ from columnStoreDB import ColumnStoreDB
 from utility import configure_logging, convert_month_year_to_code, convert_code_to_month_str, convert_floor_area_to_code
 
 def parse_matriculation(matriculation_num):
+    """
+    Derive the query parameters (start month code and target towns) from
+    the matriculation number.
+    """
     digits = [int(d) for d in matriculation_num if d.isdigit()]
     
     last_digit = digits[-1]
@@ -29,6 +37,27 @@ def parse_matriculation(matriculation_num):
     return start_month_code, town_names
 
 def run_queries(db: ColumnStoreDB, target_start_month_code: int, target_town_names: list[str], matric_num: str, logger: logging.Logger):
+    """
+    Execute 568 scan queries (Cartesian product of x and y, where x ranges from 1 to 8, and y ranges from 80 to 150)
+    against the columnnar database and write results to a CSV file.
+
+    Each query finds the flat with the lowest PSM that satisfies the following conditions:
+        1. Month falls within the x-month range starting from target_start_month_code.
+        2. Town is one of the target_town_names.
+        3. Floor area >= y sqm.
+        4. PSM <= MAX_PSM of 4725.
+
+    We scan the columnar database using the following techniques from lectures:
+        1. Clustered B-Tree index on month to get the row range covering the target month window.
+        2. Town zone-map check to skip chunks whose distinct town set has no overlap with the target towns.
+        3. Floor-area zone-map check to skip chunks whose maximum floor area is below the target minimum.
+        4. Vectorised NumPy operations on passing chunks, apply np.isin (town) and >= (floor area) masks to isolate qualifying rows.
+
+    We apply the following tiebreaker logic when multiple rows share the same minimum PSM:
+        1. Earliest month code (smallest int).
+        2. Lexicographically smallest town name.
+        3. Lexicographically smallest block identifier.
+    """
     
     town_col_idx = db.col_names["town"]
     town_col = db.columns[town_col_idx]
@@ -65,7 +94,7 @@ def run_queries(db: ColumnStoreDB, target_start_month_code: int, target_town_nam
         target_start_month, target_end_month = queries[0][query_idx]
         target_min_floor_area = convert_floor_area_to_code(queries[1][query_idx])
 
-        # 1. Check Clustered B-Tree Index on Month
+        # 1. Check clustered B-Tree index on month
         month_ranges = list(db.month_btree.values(min=target_start_month, max=target_end_month))
         if not month_ranges:
             continue # No matching months found at all
@@ -76,20 +105,20 @@ def run_queries(db: ColumnStoreDB, target_start_month_code: int, target_town_nam
         start_chunk = min_row_idx // CHUNK_SIZE
         end_chunk = max_row_idx // CHUNK_SIZE
 
-        # 2 & 3. Check Zone Maps over the affected chunks
+        # 2 & 3. Check zone maps over the affected chunks
         for chunk_idx in range(start_chunk, end_chunk + 1):
             
-            # Check Town Zone Map
+            # Check town zone map
             chunk_towns = town_zone_maps[chunk_idx]
             if not any(t in chunk_towns for t in town_codes):
                 continue
 
-            # Check Floor Area Zone Map
+            # Check floor area zone map
             chunk_min_area, chunk_max_area = floor_area_zone_maps[chunk_idx]
             if chunk_max_area < target_min_floor_area:
                 continue
 
-            # 4. If Zone Maps pass, perform Vectorized Column-Oriented Processing
+            # 4. If zone maps pass, perform vectorised operations
             chunk_start_row = max(chunk_idx * CHUNK_SIZE, min_row_idx)
             chunk_end_row = min((chunk_idx + 1) * CHUNK_SIZE, db.row_count, max_row_idx + 1)
 
@@ -211,7 +240,7 @@ def run_queries(db: ColumnStoreDB, target_start_month_code: int, target_town_nam
     logger.info(f"Results written to {results_file_path}")
 
 # ---------------------------------------------------------
-# MAIN EXECUTION
+# Main function
 # ---------------------------------------------------------
 
 if __name__ == "__main__":

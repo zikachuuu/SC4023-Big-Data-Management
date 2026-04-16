@@ -1,3 +1,7 @@
+"""
+utility.py contains helper and auxillary functions for this project.
+"""
+
 import logging
 import os
 
@@ -6,7 +10,7 @@ from constants import LOG_DIR, MONTH_MAP_DIGIT
 
 def configure_logging(matriculation_number: str) -> logging.Logger:
     """
-    Only log INFO and above to console, but log DEBUG and above to file.
+    Create and return a logger to track the program's execution.
     """
     os.makedirs(LOG_DIR, exist_ok=True)
 
@@ -36,10 +40,10 @@ def configure_logging(matriculation_number: str) -> logging.Logger:
 def convert_month_str_to_code(month_str: str) -> int:
     """
     Convert a month string in the format "MMM-YY" (e.g. "Jan-20") to an integer representation.
-    We can use this integer representation for efficient storage and comparison in the column store database.
+    We can use this integer representation for efficient storage and comparison in the columnar database.
 
     The conversion is done by encoding the month and year into a single integer using the formula:
-        encoded_month = int ((2 digit year) + (2 digit month)), where + is string concatenation, not addition.
+        encoded_month = int ((2 digit year) + (2 digit month)), where + refers to string concatenation, not addition.
     For example:
         "Jan-20" -> month = 1, year = 20 -> encoded_month = 2001
         "Feb-20" -> month = 2, year = 20 -> encoded_month = 2002
@@ -77,7 +81,9 @@ def convert_code_to_month_str(code: int) -> str:
 def convert_month_year_to_code(month: int, year: int) -> int:
     """
     Convert a month and year to the same integer code format as convert_month_str_to_code.
-    This is useful for converting the target month and year from the query into the same format as the encoded month column in the database, so that we can perform comparisons using the encoded integer values.
+    This is useful for converting the target month and year from the query into the same
+    format as the encoded month column in the database, so that we can perform comparisons
+    using the encoded integer values.
 
     The conversion is done by encoding the month and year into a single integer using the formula:
         encoded_month = int ((2 digit year) + (2 digit month)), where + is string concatenation, not addition.

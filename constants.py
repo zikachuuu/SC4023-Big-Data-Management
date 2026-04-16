@@ -1,3 +1,7 @@
+"""
+constants.py contains constants that will be used in this project.
+"""
+
 import os
 
 # Maximum allowed price per square meter
