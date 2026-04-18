@@ -13,7 +13,7 @@ source/
 ├── README.md                               # This file
 ├── requirements.txt                        # Python dependencies
 ├── ResalePricesSingapore.csv               # Input CSV file for this project
-├── utility.py                              # Helper and auxillary functions
+├── utility.py                              # Helper and auxiliary functions
 └── verify_scan_results.py                  # Verifies the correctness of the generated CSV files
 ```
 
