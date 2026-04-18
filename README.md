@@ -5,22 +5,38 @@ Code for NTU SC4023's Semester Group Project, by Group 3
 
 ## Organisation of Repository
 ```
-SC4023-Big-Data-Management/
-├── Results/                                       # Folder containing the output CSV files
-├── .gitignore                                     # Git ignore file
-├── columnStoreDB.py                               # Columnar database class
-├── constants.py                                   # Constants used in the project
-├── generate_all_possible_matric_num.py            # Generates 100 test matriculation numbers
-├── main.py                                        # Main script that executes the queries
-├── README.md                                      # This file
-├── requirements.txt                               # Python dependencies
-├── ResalePricesSingapore.csv                      # Input CSV file for this project
-├── utility.py                                     # Helper and auxillary functions
-└── verify_scan_results.py                         # Verifies the correctness of the generated CSV files
+source/
+├── columnStoreDB.py                        # Columnar database class
+├── constants.py                            # Constants used in the project
+├── generate_all_possible_matric_num.py     # Generates 100 test matriculation numbers
+├── main.py                                 # Main script that executes the queries
+├── README.md                               # This file
+├── requirements.txt                        # Python dependencies
+├── ResalePricesSingapore.csv               # Input CSV file for this project
+├── utility.py                              # Helper and auxillary functions
+└── verify_scan_results.py                  # Verifies the correctness of the generated CSV files
 ```
 
 ## Setup
-Begin by creating a virtual Python environment or Anaconda environment, and installing all required dependencies with the following command:
+Ensure that either Anaconda/Miniconda or System Python3.11 is installed beforehand.
+
+Begin by creating an Anaconda/Miniconda environment or a virtual environment in the project directory.
+
+### Anaconda/Miniconda Environment (ensure Anaconda/Miniconda is installed beforehand)
+To create a conda environment, do the following commands in anaconda/miniconda prompt:
+```bash
+conda create -n sc4023 python=3.11 -y
+conda activate sc4023
+```
+
+### Virtual Environment (ensure Python3.11 is installed beforehand)
+To create a virtual environment, do the following commands:
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+``` 
+
+Afterwards, install all required dependencies with the following command:
 ```bash
 pip install -r requirements.txt
 ```
